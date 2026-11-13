@@ -1,0 +1,15 @@
+[package]
+name = "li-sema"
+description = "li 语言的语义分析与基础类型检查"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+li-ast.workspace = true
+li-errors.workspace = true
+
+[lints]
+workspace = true

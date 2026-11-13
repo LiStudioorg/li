@@ -1,0 +1,237 @@
+//! Token 定义。
+//!
+//! 全角标点会在词法分析阶段被归一化为与半角标点相同的 Token，
+//! 因此语法分析器不需要区分 `（` 与 `(`、`；` 与 `;` 等写法。
+
+use std::fmt;
+
+use li_errors::Span;
+
+/// Token 的种类。
+///
+/// 带数据的变体保存词法分析后的值：标识符保存名称，
+/// 字符串保存解码后的内容，整数与小数保存解析后的数值。
+#[derive(Clone, Debug, PartialEq)]
+pub enum TokenKind {
+    // ---- 标识符与字面量 ----
+    /// 标识符，例如 `温度`、`count` 或 `_内部变量2`。
+    Identifier(String),
+    /// 整数字面量。
+    Integer(i64),
+    /// 小数字面量。
+    Float(f64),
+    /// 字符串字面量，保存解码后的内容。
+    String(String),
+
+    // ---- 关键字 ----
+    /// `让` / `let`。
+    Let,
+    /// `可变` / `mut`。
+    Mut,
+    /// `函数` / `fn` / `func` / `function`。
+    Func,
+    /// `返回` / `return`。
+    Return,
+    /// `如果` / `if`。
+    If,
+    /// `则` / `then`。
+    Then,
+    /// `否则` / `else`。
+    Else,
+    /// `当` / `while`。
+    While,
+    /// `跳出` / `break`。
+    Break,
+    /// `继续` / `continue`。
+    Continue,
+    /// `匹配` / `match`。
+    Match,
+    /// `成功` / `ok`。
+    Success,
+    /// `失败` / `err`。
+    Failure,
+    /// `模块` / `module`。
+    Module,
+    /// `导入` / `import`。
+    Import,
+    /// `真` / `true`。
+    True,
+    /// `假` / `false`。
+    False,
+    /// `空` / `null`。
+    Null,
+    /// `类型` / `type`。
+    Type,
+    /// `打印` / `print`。
+    Print,
+    /// `输入` / `input`。
+    Input,
+
+    // ---- 基础类型关键字 ----
+    /// `整数` / `int`。
+    IntegerType,
+    /// `小数` / `float`。
+    FloatType,
+    /// `布尔` / `bool`。
+    BoolType,
+    /// `字符串` / `string`。
+    StringType,
+    /// `列表` / `list`。
+    ListType,
+    /// `可选` / `option` / `optional`。
+    OptionalType,
+    /// `结果` / `result`。
+    ResultType,
+
+    // ---- 运算符 ----
+    /// `加` 或 `+`。
+    Plus,
+    /// `减` 或 `-`。
+    Minus,
+    /// `乘` 或 `*`。
+    Star,
+    /// `除` 或 `/`。
+    Slash,
+    /// `等于` 或 `==`。
+    EqualEqual,
+    /// `小于` 或 `<`。
+    Less,
+    /// `大于` 或 `>`。
+    Greater,
+    /// `且` 或 `&&`。
+    AndAnd,
+    /// `或` 或 `||`。
+    OrOr,
+    /// `非` 或 `!`。
+    Not,
+    /// 赋值 `=`。
+    Assign,
+    /// 箭头 `->`。
+    Arrow,
+    /// 粗箭头 `=>`。
+    FatArrow,
+
+    // ---- 分隔符 ----
+    /// 左圆括号。
+    LParen,
+    /// 右圆括号。
+    RParen,
+    /// 左花括号。
+    LBrace,
+    /// 右花括号。
+    RBrace,
+    /// 左方括号。
+    LBracket,
+    /// 右方括号。
+    RBracket,
+    /// 逗号。
+    Comma,
+    /// 分号。
+    Semicolon,
+    /// 冒号。
+    Colon,
+    /// 双冒号，用于模块路径。
+    ColonColon,
+    /// 点号，用于字段访问。
+    Dot,
+
+    /// 文件结束。
+    Eof,
+}
+
+impl TokenKind {
+    /// 是否为文件结束标记。
+    pub fn is_eof(&self) -> bool {
+        matches!(self, Self::Eof)
+    }
+}
+
+impl fmt::Display for TokenKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Identifier(name) => write!(f, "标识符 `{}`", name),
+            Self::Integer(value) => write!(f, "整数 `{}`", value),
+            Self::Float(value) => write!(f, "小数 `{}`", value),
+            Self::String(value) => write!(f, "字符串「{}」", value),
+
+            Self::Let => f.write_str("`让`"),
+            Self::Mut => f.write_str("`可变`"),
+            Self::Func => f.write_str("`函数`"),
+            Self::Return => f.write_str("`返回`"),
+            Self::If => f.write_str("`如果`"),
+            Self::Then => f.write_str("`则`"),
+            Self::Else => f.write_str("`否则`"),
+            Self::While => f.write_str("`当`"),
+            Self::Break => f.write_str("`跳出`"),
+            Self::Continue => f.write_str("`继续`"),
+            Self::Match => f.write_str("`匹配`"),
+            Self::Success => f.write_str("`成功`"),
+            Self::Failure => f.write_str("`失败`"),
+            Self::Module => f.write_str("`模块`"),
+            Self::Import => f.write_str("`导入`"),
+            Self::True => f.write_str("`真`"),
+            Self::False => f.write_str("`假`"),
+            Self::Null => f.write_str("`空`"),
+            Self::Type => f.write_str("`类型`"),
+            Self::Print => f.write_str("`打印`"),
+            Self::Input => f.write_str("`输入`"),
+
+            Self::IntegerType => f.write_str("`整数`"),
+            Self::FloatType => f.write_str("`小数`"),
+            Self::BoolType => f.write_str("`布尔`"),
+            Self::StringType => f.write_str("`字符串`"),
+            Self::ListType => f.write_str("`列表`"),
+            Self::OptionalType => f.write_str("`可选`"),
+            Self::ResultType => f.write_str("`结果`"),
+
+            Self::Plus => f.write_str("`+`"),
+            Self::Minus => f.write_str("`-`"),
+            Self::Star => f.write_str("`*`"),
+            Self::Slash => f.write_str("`/`"),
+            Self::EqualEqual => f.write_str("`==`"),
+            Self::Less => f.write_str("`<`"),
+            Self::Greater => f.write_str("`>`"),
+            Self::AndAnd => f.write_str("`&&`"),
+            Self::OrOr => f.write_str("`||`"),
+            Self::Not => f.write_str("`!`"),
+            Self::Assign => f.write_str("`=`"),
+            Self::Arrow => f.write_str("`->`"),
+            Self::FatArrow => f.write_str("`=>`"),
+
+            Self::LParen => f.write_str("`(`"),
+            Self::RParen => f.write_str("`)`"),
+            Self::LBrace => f.write_str("`{`"),
+            Self::RBrace => f.write_str("`}`"),
+            Self::LBracket => f.write_str("`[`"),
+            Self::RBracket => f.write_str("`]`"),
+            Self::Comma => f.write_str("`,`"),
+            Self::Semicolon => f.write_str("`;`"),
+            Self::Colon => f.write_str("`:`"),
+            Self::ColonColon => f.write_str("`::`"),
+            Self::Dot => f.write_str("`.`"),
+
+            Self::Eof => f.write_str("文件结尾"),
+        }
+    }
+}
+
+/// 一个带源码位置的 Token。
+#[derive(Clone, Debug, PartialEq)]
+pub struct Token {
+    /// Token 的种类与携带的数据。
+    pub kind: TokenKind,
+    /// Token 在源码中的区间。
+    pub span: Span,
+}
+
+impl Token {
+    /// 创建一个 Token。
+    pub const fn new(kind: TokenKind, span: Span) -> Self {
+        Self { kind, span }
+    }
+
+    /// 是否为文件结束标记。
+    pub fn is_eof(&self) -> bool {
+        self.kind.is_eof()
+    }
+}

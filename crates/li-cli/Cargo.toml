@@ -1,0 +1,22 @@
+[package]
+name = "li-cli"
+description = "li 编译器命令行入口"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "li"
+path = "src/main.rs"
+
+[dependencies]
+li-ast.workspace = true
+li-errors.workspace = true
+li-lexer.workspace = true
+li-parser.workspace = true
+li-sema.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,29 @@
+# li 语言编译器前端的工作区配置。
+[workspace]
+resolver = "2"
+members = [
+    "crates/li-ast",
+    "crates/li-errors",
+    "crates/li-lexer",
+    "crates/li-parser",
+    "crates/li-sema",
+    "crates/li-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT OR Apache-2.0"
+authors = ["li 语言项目贡献者"]
+
+[workspace.dependencies]
+li-ast = { path = "crates/li-ast" }
+li-errors = { path = "crates/li-errors" }
+li-lexer = { path = "crates/li-lexer" }
+li-parser = { path = "crates/li-parser" }
+li-sema = { path = "crates/li-sema" }
+
+# 编译器不依赖 unsafe 代码；后续若确有必要，应在局部显式豁免并说明原因。
+[workspace.lints.rust]
+unsafe_code = "forbid"

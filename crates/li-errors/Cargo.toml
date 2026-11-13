@@ -1,0 +1,11 @@
+[package]
+name = "li-errors"
+description = "li 编译器的统一中文诊断与源码定位"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true

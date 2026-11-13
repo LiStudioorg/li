@@ -1,0 +1,15 @@
+[package]
+name = "li-lexer"
+description = "li 语言的词法分析与 Token 定义"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+# 词法错误统一使用 li-errors 中的中文诊断类型。
+li-errors.workspace = true
+
+[lints]
+workspace = true

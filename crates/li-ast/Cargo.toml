@@ -1,0 +1,15 @@
+[package]
+name = "li-ast"
+description = "li 语言的抽象语法树节点"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+# AST 的所有节点都携带 li-errors 提供的源码区间。
+li-errors.workspace = true
+
+[lints]
+workspace = true
