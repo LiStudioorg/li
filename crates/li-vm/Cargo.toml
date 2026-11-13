@@ -1,0 +1,20 @@
+[package]
+name = "li-vm"
+description = "li 语言字节码栈式虚拟机"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+li-codegen-bytecode.workspace = true
+li-errors.workspace = true
+
+[dev-dependencies]
+li-ir.workspace = true
+li-parser.workspace = true
+li-sema.workspace = true
+
+[lints]
+workspace = true

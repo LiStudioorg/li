@@ -295,6 +295,7 @@ struct FunctionLowerer<'a> {
     context: &'a TypeContext,
     diagnostics: &'a mut DiagnosticBag,
     name: String,
+    function_span: Span,
     params: Vec<Parameter>,
     return_type: IrType,
     locals: Vec<Local>,
@@ -317,6 +318,7 @@ impl<'a> FunctionLowerer<'a> {
             context,
             diagnostics,
             name: declaration.name.name.clone(),
+            function_span: declaration.span,
             params: Vec::new(),
             return_type: context.resolve_type(&declaration.return_type),
             locals: Vec::new(),
@@ -351,7 +353,9 @@ impl<'a> FunctionLowerer<'a> {
         lowerer.blocks.push(BasicBlock {
             label: entry,
             instructions: Vec::new(),
+            instruction_spans: Vec::new(),
             terminator: Terminator::Return(None),
+            terminator_span: declaration.span,
         });
         lowerer.current = Some(0);
 
@@ -361,13 +365,14 @@ impl<'a> FunctionLowerer<'a> {
     fn lower(&mut self, body: &Block) {
         self.lower_block(body);
         if self.current.is_some() {
-            self.terminate(Terminator::Return(None));
+            self.terminate(Terminator::Return(None), body.span);
         }
     }
 
     fn finish(mut self) -> Function {
         if self.current.is_some() {
-            self.terminate(Terminator::Return(None));
+            let span = self.function_span;
+            self.terminate(Terminator::Return(None), span);
         }
 
         Function {
@@ -440,10 +445,11 @@ impl<'a> FunctionLowerer<'a> {
         Place::Temp(id)
     }
 
-    fn emit(&mut self, instruction: Instruction) {
+    fn emit(&mut self, instruction: Instruction, span: Span) {
         if let Some(index) = self.current {
             if let Some(block) = self.blocks.get_mut(index) {
                 block.instructions.push(instruction);
+                block.instruction_spans.push(span);
             }
         }
     }
@@ -452,15 +458,18 @@ impl<'a> FunctionLowerer<'a> {
         self.blocks.push(BasicBlock {
             label,
             instructions: Vec::new(),
+            instruction_spans: Vec::new(),
             terminator: Terminator::Return(None),
+            terminator_span: self.function_span,
         });
         self.current = Some(self.blocks.len() - 1);
     }
 
-    fn terminate(&mut self, terminator: Terminator) {
+    fn terminate(&mut self, terminator: Terminator, span: Span) {
         if let Some(index) = self.current.take() {
             if let Some(block) = self.blocks.get_mut(index) {
                 block.terminator = terminator;
+                block.terminator_span = span;
             }
         }
     }
@@ -503,14 +512,14 @@ impl<'a> FunctionLowerer<'a> {
             .map(|ty| self.context.resolve_type(ty))
             .unwrap_or_else(|| value.ty.clone());
         let name = self.declare_local(&statement.name.name, declared_ty.clone(), statement.mutable);
-        self.emit_coerced_copy(Place::Local(name), value, &declared_ty);
+        self.emit_coerced_copy(Place::Local(name), value, &declared_ty, statement.span);
     }
 
     fn lower_assign(&mut self, statement: &AssignStmt) {
-        self.lower_assignment(&statement.target, &statement.value);
+        self.lower_assignment(&statement.target, &statement.value, statement.span);
     }
 
-    fn lower_assignment(&mut self, target: &Expr, value: &Expr) {
+    fn lower_assignment(&mut self, target: &Expr, value: &Expr, span: Span) {
         match &target.kind {
             ExprKind::Identifier(ident) => {
                 let Some(binding) = self.lookup(&ident.name) else {
@@ -520,18 +529,21 @@ impl<'a> FunctionLowerer<'a> {
                 };
 
                 let value = self.lower_expr(value);
-                self.emit_coerced_copy(Place::Local(binding.name), value, &binding.ty);
+                self.emit_coerced_copy(Place::Local(binding.name), value, &binding.ty, span);
             }
             ExprKind::FieldAccess { object, field } => {
                 let object_value = self.lower_expr(object);
                 let field_ty = self.field_type(&object_value.ty, field, field.span);
                 let value = self.lower_expr(value);
-                let value = self.coerce_to_operand(value, &field_ty);
-                self.emit(Instruction::SetField {
-                    object: object_value.operand,
-                    field: field.name.clone(),
-                    value,
-                });
+                let value = self.coerce_to_operand(value, &field_ty, span);
+                self.emit(
+                    Instruction::SetField {
+                        object: object_value.operand,
+                        field: field.name.clone(),
+                        value,
+                    },
+                    span,
+                );
             }
             ExprKind::Index { object, index } => {
                 let object_value = self.lower_expr(object);
@@ -541,14 +553,17 @@ impl<'a> FunctionLowerer<'a> {
                     _ => IrType::Unknown,
                 };
                 let value = self.lower_expr(value);
-                let value = self.coerce_to_operand(value, &element_ty);
-                self.emit(Instruction::SetIndex {
-                    object: object_value.operand,
-                    index: index_value.operand,
-                    value,
-                });
+                let value = self.coerce_to_operand(value, &element_ty, span);
+                self.emit(
+                    Instruction::SetIndex {
+                        object: object_value.operand,
+                        index: index_value.operand,
+                        value,
+                    },
+                    span,
+                );
             }
-            ExprKind::Parenthesized(inner) => self.lower_assignment(inner, value),
+            ExprKind::Parenthesized(inner) => self.lower_assignment(inner, value, span),
             _ => {
                 self.lower_expr(target);
                 self.lower_expr(value);
@@ -562,10 +577,10 @@ impl<'a> FunctionLowerer<'a> {
             Some(value) => {
                 let value = self.lower_expr(value);
                 let expected = self.return_type.clone();
-                let value = self.coerce_to_operand(value, &expected);
-                self.terminate(Terminator::Return(Some(value)));
+                let value = self.coerce_to_operand(value, &expected, statement.span);
+                self.terminate(Terminator::Return(Some(value)), statement.span);
             }
-            None => self.terminate(Terminator::Return(None)),
+            None => self.terminate(Terminator::Return(None), statement.span),
         }
     }
 
@@ -576,23 +591,26 @@ impl<'a> FunctionLowerer<'a> {
         let join_label = self.new_label();
         let else_target = else_label.unwrap_or(join_label);
 
-        self.terminate(Terminator::Branch {
-            condition: condition.operand,
-            then_label,
-            else_label: else_target,
-        });
+        self.terminate(
+            Terminator::Branch {
+                condition: condition.operand,
+                then_label,
+                else_label: else_target,
+            },
+            statement.span,
+        );
 
         self.start_block(then_label);
         self.lower_block(&statement.then_branch);
         if self.current.is_some() {
-            self.terminate(Terminator::Jump(join_label));
+            self.terminate(Terminator::Jump(join_label), statement.then_branch.span);
         }
 
         if let Some(else_branch) = &statement.else_branch {
             self.start_block(else_label.unwrap_or(join_label));
             self.lower_block(else_branch);
             if self.current.is_some() {
-                self.terminate(Terminator::Jump(join_label));
+                self.terminate(Terminator::Jump(join_label), else_branch.span);
             }
         }
 
@@ -604,14 +622,17 @@ impl<'a> FunctionLowerer<'a> {
         let body = self.new_label();
         let exit = self.new_label();
 
-        self.terminate(Terminator::Jump(header));
+        self.terminate(Terminator::Jump(header), statement.span);
         self.start_block(header);
         let condition = self.lower_expr(&statement.condition);
-        self.terminate(Terminator::Branch {
-            condition: condition.operand,
-            then_label: body,
-            else_label: exit,
-        });
+        self.terminate(
+            Terminator::Branch {
+                condition: condition.operand,
+                then_label: body,
+                else_label: exit,
+            },
+            statement.condition.span,
+        );
 
         self.start_block(body);
         self.loops.push(LoopTargets {
@@ -621,7 +642,7 @@ impl<'a> FunctionLowerer<'a> {
         self.lower_block(&statement.body);
         self.loops.pop();
         if self.current.is_some() {
-            self.terminate(Terminator::Jump(header));
+            self.terminate(Terminator::Jump(header), statement.body.span);
         }
 
         self.start_block(exit);
@@ -629,23 +650,26 @@ impl<'a> FunctionLowerer<'a> {
 
     fn lower_break(&mut self, span: Span) {
         match self.loops.last() {
-            Some(targets) => self.terminate(Terminator::Jump(targets.break_label)),
+            Some(targets) => self.terminate(Terminator::Jump(targets.break_label), span),
             None => self.report(span, "「跳出」只能用于循环内部"),
         }
     }
 
     fn lower_continue(&mut self, span: Span) {
         match self.loops.last() {
-            Some(targets) => self.terminate(Terminator::Jump(targets.continue_label)),
+            Some(targets) => self.terminate(Terminator::Jump(targets.continue_label), span),
             None => self.report(span, "「继续」只能用于循环内部"),
         }
     }
 
     fn lower_print(&mut self, statement: &PrintStmt) {
         let value = self.lower_expr(&statement.value);
-        self.emit(Instruction::Print {
-            value: value.operand,
-        });
+        self.emit(
+            Instruction::Print {
+                value: value.operand,
+            },
+            statement.span,
+        );
     }
 
     fn lower_match(&mut self, statement: &MatchStmt) {
@@ -661,14 +685,14 @@ impl<'a> FunctionLowerer<'a> {
 
             match &arm.pattern.kind {
                 PatternKind::Wildcard | PatternKind::Binding(_) => {
-                    self.terminate(Terminator::Jump(arm_labels[index]));
+                    self.terminate(Terminator::Jump(arm_labels[index]), arm.span);
                     checks_reachable = false;
                 }
                 PatternKind::Literal(literal) => {
                     let condition =
                         if matches!(literal, Literal::Null) && scrutinee.ty.is_optional() {
-                            let success = self.emit_is_success(scrutinee.operand.clone());
-                            self.emit_unary(UnaryOp::Not, success, IrType::Bool)
+                            let success = self.emit_is_success(scrutinee.operand.clone(), arm.span);
+                            self.emit_unary(UnaryOp::Not, success, IrType::Bool, arm.span)
                         } else {
                             let constant = Operand::Constant(constant_from_literal(literal));
                             self.emit_binary(
@@ -676,36 +700,43 @@ impl<'a> FunctionLowerer<'a> {
                                 scrutinee.operand.clone(),
                                 constant,
                                 IrType::Bool,
+                                arm.span,
                             )
                         };
                     let next = self.new_label();
-                    self.terminate(Terminator::Branch {
-                        condition,
-                        then_label: arm_labels[index],
-                        else_label: next,
-                    });
+                    self.terminate(
+                        Terminator::Branch {
+                            condition,
+                            then_label: arm_labels[index],
+                            else_label: next,
+                        },
+                        arm.span,
+                    );
                     self.start_block(next);
                 }
                 PatternKind::Success(_) | PatternKind::Failure(_) => {
-                    let success = self.emit_is_success(scrutinee.operand.clone());
+                    let success = self.emit_is_success(scrutinee.operand.clone(), arm.span);
                     let condition = if matches!(arm.pattern.kind, PatternKind::Failure(_)) {
-                        self.emit_unary(UnaryOp::Not, success, IrType::Bool)
+                        self.emit_unary(UnaryOp::Not, success, IrType::Bool, arm.span)
                     } else {
                         success
                     };
                     let next = self.new_label();
-                    self.terminate(Terminator::Branch {
-                        condition,
-                        then_label: arm_labels[index],
-                        else_label: next,
-                    });
+                    self.terminate(
+                        Terminator::Branch {
+                            condition,
+                            then_label: arm_labels[index],
+                            else_label: next,
+                        },
+                        arm.span,
+                    );
                     self.start_block(next);
                 }
             }
         }
 
         if self.current.is_some() {
-            self.terminate(Terminator::Jump(join));
+            self.terminate(Terminator::Jump(join), statement.span);
         }
 
         for (index, arm) in statement.arms.iter().enumerate() {
@@ -715,7 +746,7 @@ impl<'a> FunctionLowerer<'a> {
             self.lower_block(&arm.body);
             self.pop_scope();
             if self.current.is_some() {
-                self.terminate(Terminator::Jump(join));
+                self.terminate(Terminator::Jump(join), arm.span);
             }
         }
 
@@ -727,50 +758,65 @@ impl<'a> FunctionLowerer<'a> {
             PatternKind::Wildcard | PatternKind::Literal(_) => {}
             PatternKind::Binding(ident) => {
                 let name = self.declare_local(&ident.name, value.ty.clone(), false);
-                self.emit(Instruction::Copy {
-                    dest: Place::Local(name),
-                    src: value.operand.clone(),
-                    ty: value.ty.clone(),
-                });
+                self.emit(
+                    Instruction::Copy {
+                        dest: Place::Local(name),
+                        src: value.operand.clone(),
+                        ty: value.ty.clone(),
+                    },
+                    pattern.span,
+                );
             }
             PatternKind::Success(binding) => {
                 if let Some(ident) = binding {
                     let (ty, operand) = if let Some(inner) = value.ty.optional_inner() {
                         let inner = inner.clone();
-                        let operand = self.emit_unwrap(value.operand.clone(), inner.clone());
+                        let operand =
+                            self.emit_unwrap(value.operand.clone(), inner.clone(), pattern.span);
                         (inner, operand)
                     } else if let Some(ok) = value.ty.result_ok() {
                         let ok = ok.clone();
-                        let operand = self.emit_unwrap(value.operand.clone(), ok.clone());
+                        let operand =
+                            self.emit_unwrap(value.operand.clone(), ok.clone(), pattern.span);
                         (ok, operand)
                     } else {
                         (IrType::Unknown, value.operand.clone())
                     };
 
                     let name = self.declare_local(&ident.name, ty.clone(), false);
-                    self.emit(Instruction::Copy {
-                        dest: Place::Local(name),
-                        src: operand,
-                        ty,
-                    });
+                    self.emit(
+                        Instruction::Copy {
+                            dest: Place::Local(name),
+                            src: operand,
+                            ty,
+                        },
+                        pattern.span,
+                    );
                 }
             }
             PatternKind::Failure(binding) => {
                 if let Some(ident) = binding {
                     let (ty, operand) = if let Some(error) = value.ty.result_error() {
                         let error = error.clone();
-                        let operand = self.emit_unwrap_error(value.operand.clone(), error.clone());
+                        let operand = self.emit_unwrap_error(
+                            value.operand.clone(),
+                            error.clone(),
+                            pattern.span,
+                        );
                         (error, operand)
                     } else {
                         (IrType::Unknown, value.operand.clone())
                     };
 
                     let name = self.declare_local(&ident.name, ty.clone(), false);
-                    self.emit(Instruction::Copy {
-                        dest: Place::Local(name),
-                        src: operand,
-                        ty,
-                    });
+                    self.emit(
+                        Instruction::Copy {
+                            dest: Place::Local(name),
+                            src: operand,
+                            ty,
+                        },
+                        pattern.span,
+                    );
                 }
             }
         }
@@ -800,10 +846,13 @@ impl<'a> FunctionLowerer<'a> {
             },
             ExprKind::Input => {
                 let dest = self.new_temp();
-                self.emit(Instruction::Input {
-                    dest: dest.clone(),
-                    ty: IrType::String,
-                });
+                self.emit(
+                    Instruction::Input {
+                        dest: dest.clone(),
+                        ty: IrType::String,
+                    },
+                    expr.span,
+                );
                 TypedValue {
                     operand: Operand::Place(dest),
                     ty: IrType::String,
@@ -815,7 +864,7 @@ impl<'a> FunctionLowerer<'a> {
                     AstUnaryOp::Negate => (UnaryOp::Negate, operand.ty.clone()),
                     AstUnaryOp::Not => (UnaryOp::Not, IrType::Bool),
                 };
-                let result = self.emit_unary(op, operand.operand, ty.clone());
+                let result = self.emit_unary(op, operand.operand, ty.clone(), expr.span);
                 TypedValue {
                     operand: result,
                     ty,
@@ -842,23 +891,32 @@ impl<'a> FunctionLowerer<'a> {
                     AstBinaryOp::And => BinaryOp::And,
                     AstBinaryOp::Or => BinaryOp::Or,
                 };
-                let operand = self.emit_binary(op, left.operand, right.operand, result_ty.clone());
+                let operand = self.emit_binary(
+                    op,
+                    left.operand,
+                    right.operand,
+                    result_ty.clone(),
+                    expr.span,
+                );
                 TypedValue {
                     operand,
                     ty: result_ty,
                 }
             }
-            ExprKind::Call { callee, args } => self.lower_call(callee, args),
+            ExprKind::Call { callee, args } => self.lower_call(callee, args, expr.span),
             ExprKind::FieldAccess { object, field } => {
                 let object = self.lower_expr(object);
                 let ty = self.field_type(&object.ty, field, field.span);
                 let dest = self.new_temp();
-                self.emit(Instruction::GetField {
-                    dest: dest.clone(),
-                    object: object.operand,
-                    field: field.name.clone(),
-                    ty: ty.clone(),
-                });
+                self.emit(
+                    Instruction::GetField {
+                        dest: dest.clone(),
+                        object: object.operand,
+                        field: field.name.clone(),
+                        ty: ty.clone(),
+                    },
+                    expr.span,
+                );
                 TypedValue {
                     operand: Operand::Place(dest),
                     ty,
@@ -872,12 +930,15 @@ impl<'a> FunctionLowerer<'a> {
                     _ => IrType::Unknown,
                 };
                 let dest = self.new_temp();
-                self.emit(Instruction::GetIndex {
-                    dest: dest.clone(),
-                    object: object.operand,
-                    index: index.operand,
-                    ty: ty.clone(),
-                });
+                self.emit(
+                    Instruction::GetIndex {
+                        dest: dest.clone(),
+                        object: object.operand,
+                        index: index.operand,
+                        ty: ty.clone(),
+                    },
+                    expr.span,
+                );
                 TypedValue {
                     operand: Operand::Place(dest),
                     ty,
@@ -897,11 +958,14 @@ impl<'a> FunctionLowerer<'a> {
 
                 let ty = IrType::List(Box::new(element_ty));
                 let dest = self.new_temp();
-                self.emit(Instruction::MakeList {
-                    dest: dest.clone(),
-                    elements,
-                    ty: ty.clone(),
-                });
+                self.emit(
+                    Instruction::MakeList {
+                        dest: dest.clone(),
+                        elements,
+                        ty: ty.clone(),
+                    },
+                    expr.span,
+                );
                 TypedValue {
                     operand: Operand::Place(dest),
                     ty,
@@ -911,7 +975,7 @@ impl<'a> FunctionLowerer<'a> {
         }
     }
 
-    fn lower_call(&mut self, callee: &Expr, args: &[Expr]) -> TypedValue {
+    fn lower_call(&mut self, callee: &Expr, args: &[Expr], span: Span) -> TypedValue {
         let function_name = match &callee.kind {
             ExprKind::Identifier(ident) => Some(ident.name.clone()),
             _ => {
@@ -937,7 +1001,7 @@ impl<'a> FunctionLowerer<'a> {
                 .as_ref()
                 .and_then(|signature| signature.params.get(index))
             {
-                self.coerce_to_operand(value, expected)
+                self.coerce_to_operand(value, expected, argument.span)
             } else {
                 value.operand
             };
@@ -949,12 +1013,15 @@ impl<'a> FunctionLowerer<'a> {
             .map(|signature| signature.return_type.clone())
             .unwrap_or(IrType::Unknown);
         let dest = self.new_temp();
-        self.emit(Instruction::Call {
-            dest: Some(dest.clone()),
-            function: function_name.unwrap_or_else(|| "<未知函数>".to_owned()),
-            args: arguments,
-            ty: return_type.clone(),
-        });
+        self.emit(
+            Instruction::Call {
+                dest: Some(dest.clone()),
+                function: function_name.unwrap_or_else(|| "<未知函数>".to_owned()),
+                args: arguments,
+                ty: return_type.clone(),
+            },
+            span,
+        );
 
         TypedValue {
             operand: Operand::Place(dest),
@@ -984,72 +1051,97 @@ impl<'a> FunctionLowerer<'a> {
         }
     }
 
-    fn emit_binary(&mut self, op: BinaryOp, left: Operand, right: Operand, ty: IrType) -> Operand {
+    fn emit_binary(
+        &mut self,
+        op: BinaryOp,
+        left: Operand,
+        right: Operand,
+        ty: IrType,
+        span: Span,
+    ) -> Operand {
         let dest = self.new_temp();
-        self.emit(Instruction::Binary {
-            dest: dest.clone(),
-            op,
-            left,
-            right,
-            ty: ty.clone(),
-        });
+        self.emit(
+            Instruction::Binary {
+                dest: dest.clone(),
+                op,
+                left,
+                right,
+                ty: ty.clone(),
+            },
+            span,
+        );
         Operand::Place(dest)
     }
 
-    fn emit_unary(&mut self, op: UnaryOp, operand: Operand, ty: IrType) -> Operand {
+    fn emit_unary(&mut self, op: UnaryOp, operand: Operand, ty: IrType, span: Span) -> Operand {
         let dest = self.new_temp();
-        self.emit(Instruction::Unary {
-            dest: dest.clone(),
-            op,
-            operand,
-            ty: ty.clone(),
-        });
+        self.emit(
+            Instruction::Unary {
+                dest: dest.clone(),
+                op,
+                operand,
+                ty: ty.clone(),
+            },
+            span,
+        );
         Operand::Place(dest)
     }
 
-    fn emit_is_success(&mut self, value: Operand) -> Operand {
+    fn emit_is_success(&mut self, value: Operand, span: Span) -> Operand {
         let dest = self.new_temp();
-        self.emit(Instruction::IsSuccess {
-            dest: dest.clone(),
-            value,
-            ty: IrType::Bool,
-        });
+        self.emit(
+            Instruction::IsSuccess {
+                dest: dest.clone(),
+                value,
+                ty: IrType::Bool,
+            },
+            span,
+        );
         Operand::Place(dest)
     }
 
-    fn emit_unwrap(&mut self, value: Operand, ty: IrType) -> Operand {
+    fn emit_unwrap(&mut self, value: Operand, ty: IrType, span: Span) -> Operand {
         let dest = self.new_temp();
-        self.emit(Instruction::Unwrap {
-            dest: dest.clone(),
-            value,
-            ty: ty.clone(),
-        });
+        self.emit(
+            Instruction::Unwrap {
+                dest: dest.clone(),
+                value,
+                ty: ty.clone(),
+            },
+            span,
+        );
         Operand::Place(dest)
     }
 
-    fn emit_unwrap_error(&mut self, value: Operand, ty: IrType) -> Operand {
+    fn emit_unwrap_error(&mut self, value: Operand, ty: IrType, span: Span) -> Operand {
         let dest = self.new_temp();
-        self.emit(Instruction::UnwrapError {
-            dest: dest.clone(),
-            value,
-            ty: ty.clone(),
-        });
+        self.emit(
+            Instruction::UnwrapError {
+                dest: dest.clone(),
+                value,
+                ty: ty.clone(),
+            },
+            span,
+        );
         Operand::Place(dest)
     }
 
-    fn emit_coerced_copy(&mut self, dest: Place, value: TypedValue, expected: &IrType) {
-        let value = self.coerce_to_operand(value, expected);
-        self.emit(Instruction::Copy {
-            dest,
-            src: value,
-            ty: expected.clone(),
-        });
+    fn emit_coerced_copy(&mut self, dest: Place, value: TypedValue, expected: &IrType, span: Span) {
+        let value = self.coerce_to_operand(value, expected, span);
+        self.emit(
+            Instruction::Copy {
+                dest,
+                src: value,
+                ty: expected.clone(),
+            },
+            span,
+        );
     }
 
     /// 按目标类型包装可选值或结果值。
     ///
     /// 已经是对应包装类型的值直接透传，避免重复包装。
-    fn coerce_to_operand(&mut self, value: TypedValue, expected: &IrType) -> Operand {
+    fn coerce_to_operand(&mut self, value: TypedValue, expected: &IrType, span: Span) -> Operand {
         if expected.is_optional() {
             if value.ty.is_optional() {
                 return value.operand;
@@ -1061,11 +1153,14 @@ impl<'a> FunctionLowerer<'a> {
             } else {
                 Some(value.operand)
             };
-            self.emit(Instruction::WrapOptional {
-                dest: dest.clone(),
-                value: wrapped,
-                ty: expected.clone(),
-            });
+            self.emit(
+                Instruction::WrapOptional {
+                    dest: dest.clone(),
+                    value: wrapped,
+                    ty: expected.clone(),
+                },
+                span,
+            );
             return Operand::Place(dest);
         }
 
@@ -1075,11 +1170,14 @@ impl<'a> FunctionLowerer<'a> {
             }
 
             let dest = self.new_temp();
-            self.emit(Instruction::WrapResult {
-                dest: dest.clone(),
-                value: value.operand,
-                ty: expected.clone(),
-            });
+            self.emit(
+                Instruction::WrapResult {
+                    dest: dest.clone(),
+                    value: value.operand,
+                    ty: expected.clone(),
+                },
+                span,
+            );
             return Operand::Place(dest);
         }
 

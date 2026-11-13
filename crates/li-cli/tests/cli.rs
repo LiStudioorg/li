@@ -64,6 +64,53 @@ fn compiles_a_li_file_to_javascript() {
 }
 
 #[test]
+fn compiles_and_executes_bytecode() {
+    let directory = temp_directory("li-cli-字节码");
+    let input = directory.join("斐波那契.li");
+    fs::write(
+        &input,
+        include_str!("../../li-parser/tests/fixtures/fibonacci.li"),
+    )
+    .expect("无法写入 li 源文件");
+
+    let compile = Command::new(env!("CARGO_BIN_EXE_li"))
+        .arg("编译")
+        .arg(&input)
+        .output()
+        .expect("无法启动 li 编译器");
+    assert!(
+        compile.status.success(),
+        "编译失败：\n{}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&compile.stdout);
+    assert!(stdout.contains("已生成字节码"), "缺少成功提示：{stdout}");
+
+    let bytecode_path = directory.join("斐波那契.lic");
+    let bytecode = fs::read_to_string(&bytecode_path).expect("未生成 .lic 文件");
+    assert!(bytecode.contains(".entry 主"), "缺少入口声明：\n{bytecode}");
+    assert!(
+        bytecode.contains("CALL 斐波那契 1"),
+        "缺少函数调用指令：\n{bytecode}"
+    );
+
+    let execute = Command::new(env!("CARGO_BIN_EXE_li"))
+        .arg("执行")
+        .arg(&bytecode_path)
+        .output()
+        .expect("无法启动 li 虚拟机");
+    assert!(
+        execute.status.success(),
+        "执行失败：\n{}",
+        String::from_utf8_lossy(&execute.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&execute.stdout), "55\n");
+
+    let _ = fs::remove_dir_all(&directory);
+}
+
+#[test]
 fn reports_chinese_semantic_errors_with_positions() {
     let directory = temp_directory("li-cli-失败");
     let input = directory.join("错误.li");

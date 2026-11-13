@@ -7,6 +7,8 @@
 
 use std::fmt;
 
+use li_errors::Span;
+
 /// IR 中保留的静态类型。
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum IrType {
@@ -558,8 +560,12 @@ pub struct BasicBlock {
     pub label: Label,
     /// 三地址码指令序列。
     pub instructions: Vec<Instruction>,
+    /// 与 `instructions` 一一对应的源码区间。
+    pub instruction_spans: Vec<Span>,
     /// 块末尾的控制流终止指令。
     pub terminator: Terminator,
+    /// 终止指令对应的源码区间。
+    pub terminator_span: Span,
 }
 
 /// 局部变量声明。

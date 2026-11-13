@@ -37,6 +37,25 @@ fn lowers_fibonacci_with_types_and_control_flow() {
     assert!(text.contains("BRANCH"), "缺少 BRANCH：\n{text}");
     assert!(text.contains("RETURN"), "缺少 RETURN：\n{text}");
     assert!(text.contains("打印 值"), "缺少打印指令：\n{text}");
+
+    for block in &fibonacci.blocks {
+        assert_eq!(
+            block.instruction_spans.len(),
+            block.instructions.len(),
+            "每条 IR 指令都必须携带源码区间"
+        );
+        assert!(
+            block.terminator_span.start.line >= 1,
+            "终止指令必须携带源码区间"
+        );
+    }
+    assert!(
+        fibonacci
+            .blocks
+            .iter()
+            .any(|block| block.terminator_span.start.line == 4),
+        "返回语句的源码区间应定位到第 4 行"
+    );
 }
 
 #[test]

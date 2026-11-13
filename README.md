@@ -6,9 +6,8 @@ li 是一门面向专业开发者的通用编程语言，使用中文关键字�
 - 词法分析、语法分析与语义分析；
 - 严格编译期检查：不可变变量重赋值、可选值未判空、结果值未匹配、禁止隐式类型转换；
 - 保留类型信息的中立 IR，使用三地址码与控制流图（CFG）；
-- JavaScript 后端，可把 `.li` 编译为 Node.js 可直接运行的 `.js`。
-
-> 字节码 VM 后端将在后续里程碑接入。
+- JavaScript 后端，可把 `.li` 编译为 Node.js 可直接运行的 `.js`；
+- 字节码后端与栈式虚拟机，可把 `.li` 编译为便于阅读的 `.lic` 文本并执行。
 
 ## 目录结构
 
@@ -26,6 +25,8 @@ li 是一门面向专业开发者的通用编程语言，使用中文关键字�
     ├── li-sema             # 语义分析与严格类型检查
     ├── li-ir               # 中立 IR、三地址码与 AST 降级
     ├── li-codegen-js       # JavaScript 后端
+    ├── li-codegen-bytecode # 字节码后端与 .lic 文本格式
+    ├── li-vm               # 栈式字节码虚拟机
     └── li-cli              # 命令行入口
 ```
 
@@ -42,22 +43,68 @@ cargo fmt --all -- --check
 
 ## 使用
 
-把 li 源码编译为同名 JavaScript 文件：
+把 li 源码编译为字节码并交给虚拟机执行：
+
+```bash
+cargo run -p li-cli -- 编译 crates/li-parser/tests/fixtures/fibonacci.li
+cargo run -p li-cli -- 执行 crates/li-parser/tests/fixtures/fibonacci.lic
+# 输出：55
+```
+
+也可以把 li 源码编译为同名 JavaScript 文件：
 
 ```bash
 cargo run -p li-cli -- 编译-js 示例.li
 node 示例.js
 ```
 
-例如斐波那契样例：
+`打印(值)` 在 JavaScript 后端映射为 `console.log(值)`，在字节码后端映射为
+`PRINT` 指令并由虚拟机输出到控制台。
 
-```bash
-cargo run -p li-cli -- 编译-js crates/li-parser/tests/fixtures/fibonacci.li
-node crates/li-parser/tests/fixtures/fibonacci.js
-# 输出：55
+## 字节码与虚拟机
+
+`li-codegen-bytecode` 把中立 IR 的 CFG 展开为线性指令序列，并把基本块标签
+回填为函数内的指令地址。指令集包括：
+
+```text
+PUSH_CONST  LOAD  STORE  POP  ADD  SUB  MUL  DIV  NEG  NOT
+LT  GT  EQ  AND  OR  JUMP  JUMP_IF_FALSE  CALL  RETURN  RETURN_VOID
+HALT  PRINT  INPUT  MAKE_LIST  GET_FIELD  SET_FIELD  GET_INDEX  SET_INDEX
+WRAP_OPTIONAL  WRAP_RESULT  IS_SUCCESS  UNWRAP  UNWRAP_ERROR  NOP
 ```
 
-`打印(值)` 会映射为 JavaScript 的 `console.log(值)`。
+每个函数拥有常量池引用、局部槽位表与独立的操作数栈；`CALL` 创建新的调用帧，
+`RETURN` 把返回值送回调用者。`.lic` 使用文本格式，跳转目标直接写成指令下标，
+每条指令末尾的 `@行:列` 指向对应的 li 源码位置，便于调试运行时错误。
+
+斐波那契函数生成的字节码片段：
+
+```text
+.constants 4
+0 整数 2
+1 整数 1
+2 整数 10
+3 整数 0
+.end
+
+.function 斐波那契 1
+.slots 项数 t0 t1 t2 t3 t4 t5
+.code
+0000 LOAD 0 @3:8
+0001 PUSH_CONST 0 @3:8
+0002 LT @3:8
+0003 STORE 1 @3:8
+0004 LOAD 1 @3:5
+0005 JUMP_IF_FALSE 9 @3:5
+0006 JUMP 7 @3:5
+0007 LOAD 0 @4:9
+0008 RETURN @4:9
+...
+.end
+```
+
+虚拟机运行时会重新校验常量下标、槽位下标、跳转目标与函数调用，并用
+`第 N 行第 M 列：运行时错误：...；函数「...」，指令 ...` 的格式报告错误。
 
 ## 中立 IR
 
@@ -94,4 +141,6 @@ node crates/li-parser/tests/fixtures/fibonacci.js
 5. **里程碑 5（已完成）**：新增 `li-ir` 与 `li-codegen-js`，把 AST 降级为保留类型的
    CFG/三地址码 IR，CLI 支持 `li 编译-js <文件.li>`；斐波那契样例生成的 JavaScript
    可由 Node.js 直接运行并输出 `55`。
-6. **里程碑 6**：实现字节码生成与虚拟机后端，复用同一套中立 IR。
+6. **里程碑 6（已完成）**：新增 `li-codegen-bytecode` 与 `li-vm`，实现常量池、
+   栈式指令集、CFG 到指令地址的回填、`.lic` 文本序列化/解析、调用栈与运行时错误定位；
+   CLI 支持 `li 编译 <文件.li>` 与 `li 执行 <文件.lic>`，斐波那契样例输出 `55`。
