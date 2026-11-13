@@ -7,6 +7,8 @@ members = [
     "crates/li-lexer",
     "crates/li-parser",
     "crates/li-sema",
+    "crates/li-ir",
+    "crates/li-codegen-js",
     "crates/li-cli",
 ]
 
@@ -23,6 +25,8 @@ li-errors = { path = "crates/li-errors" }
 li-lexer = { path = "crates/li-lexer" }
 li-parser = { path = "crates/li-parser" }
 li-sema = { path = "crates/li-sema" }
+li-ir = { path = "crates/li-ir" }
+li-codegen-js = { path = "crates/li-codegen-js" }
 
 # 编译器不依赖 unsafe 代码；后续若确有必要，应在局部显式豁免并说明原因。
 [workspace.lints.rust]
