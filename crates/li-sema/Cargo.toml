@@ -11,5 +11,8 @@ authors.workspace = true
 li-ast.workspace = true
 li-errors.workspace = true
 
+[dev-dependencies]
+li-parser.workspace = true
+
 [lints]
 workspace = true
