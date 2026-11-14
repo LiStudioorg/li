@@ -66,6 +66,8 @@ pub enum TokenKind {
     Print,
     /// `输入` / `input`。
     Input,
+    /// `视图` / `view`，用于 `.lui` 视图文件。
+    View,
 
     // ---- 基础类型关键字 ----
     /// `整数` / `int`。
@@ -144,6 +146,59 @@ impl TokenKind {
     pub fn is_eof(&self) -> bool {
         matches!(self, Self::Eof)
     }
+
+    /// 返回关键字或中文运算符的规范中文写法。
+    ///
+    /// 视图文件允许把关键字用作标签名或属性名，例如 `列表 { ... }`
+    /// 与 `类型: 「button」`。词法阶段只保存 Token 种类，因此这里提供
+    /// 一份从种类回到规范中文文本的映射，供视图解析器还原名称。
+    /// 标点、字面量与文件结束标记返回 [`None`]。
+    pub fn keyword_name(&self) -> Option<&'static str> {
+        let name = match self {
+            Self::Let => "让",
+            Self::Mut => "可变",
+            Self::Func => "函数",
+            Self::Return => "返回",
+            Self::If => "如果",
+            Self::Then => "则",
+            Self::Else => "否则",
+            Self::While => "当",
+            Self::Break => "跳出",
+            Self::Continue => "继续",
+            Self::Match => "匹配",
+            Self::Success => "成功",
+            Self::Failure => "失败",
+            Self::Module => "模块",
+            Self::Import => "导入",
+            Self::True => "真",
+            Self::False => "假",
+            Self::Null => "空",
+            Self::Type => "类型",
+            Self::Print => "打印",
+            Self::Input => "输入",
+            Self::View => "视图",
+            Self::IntegerType => "整数",
+            Self::FloatType => "小数",
+            Self::BoolType => "布尔",
+            Self::StringType => "字符串",
+            Self::ListType => "列表",
+            Self::OptionalType => "可选",
+            Self::ResultType => "结果",
+            Self::Plus => "加",
+            Self::Minus => "减",
+            Self::Star => "乘",
+            Self::Slash => "除",
+            Self::EqualEqual => "等于",
+            Self::Less => "小于",
+            Self::Greater => "大于",
+            Self::AndAnd => "且",
+            Self::OrOr => "或",
+            Self::Not => "非",
+            _ => return None,
+        };
+
+        Some(name)
+    }
 }
 
 impl fmt::Display for TokenKind {
@@ -175,6 +230,7 @@ impl fmt::Display for TokenKind {
             Self::Type => f.write_str("`类型`"),
             Self::Print => f.write_str("`打印`"),
             Self::Input => f.write_str("`输入`"),
+            Self::View => f.write_str("`视图`"),
 
             Self::IntegerType => f.write_str("`整数`"),
             Self::FloatType => f.write_str("`小数`"),

@@ -49,6 +49,7 @@ fn recognizes_all_chinese_keywords() {
         ("类型", TokenKind::Type),
         ("打印", TokenKind::Print),
         ("输入", TokenKind::Input),
+        ("视图", TokenKind::View),
         ("整数", TokenKind::IntegerType),
         ("小数", TokenKind::FloatType),
         ("字符串", TokenKind::StringType),
@@ -93,6 +94,7 @@ fn recognizes_all_english_keyword_aliases() {
         ("type", TokenKind::Type),
         ("print", TokenKind::Print),
         ("input", TokenKind::Input),
+        ("view", TokenKind::View),
         ("int", TokenKind::IntegerType),
         ("integer", TokenKind::IntegerType),
         ("float", TokenKind::FloatType),
@@ -328,7 +330,11 @@ fn rejects_ascii_quote_string_delimiters() {
     let message = lex("\"你好\"").unwrap_err().to_string();
 
     assert!(message.contains("第 1 行第 1 列"), "实际诊断：{message}");
-    assert!(message.contains("非法字符"), "实际诊断：{message}");
+    assert!(
+        message.contains("字符串必须使用中文书名号「」作为定界符"),
+        "实际诊断：{message}"
+    );
+    assert!(message.contains("期望 `「...」`"), "实际诊断：{message}");
     assert!(message.contains("实际 `\"`"), "实际诊断：{message}");
 }
 

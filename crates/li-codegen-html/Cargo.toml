@@ -1,0 +1,18 @@
+[package]
+name = "li-codegen-html"
+description = "li 语言 .lui 视图文件的静态 HTML 后端"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+li-ast.workspace = true
+li-errors.workspace = true
+
+[dev-dependencies]
+li-parser.workspace = true
+
+[lints]
+workspace = true

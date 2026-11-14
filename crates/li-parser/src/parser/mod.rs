@@ -1,8 +1,8 @@
-//! 递归下降解析器核心：程序项、模块、导入、函数与类型声明。
+//! 递归下降解析器核心：程序项、模块、导入、函数、类型与视图声明。
 //!
 //! 表达式使用 Pratt 解析，见 `expr` 子模块；语句与匹配模式见 `stmt`；
-//! 类型标注见 `ty`。所有错误都写入 `li-errors` 的诊断集合，并在语句层
-//! 使用恐慌模式恢复到 `;` 或 `}` 后继续解析。
+//! 类型标注见 `ty`，`.lui` 视图声明见 `view`。所有错误都写入 `li-errors`
+//! 的诊断集合，并在语句层使用恐慌模式恢复到 `;` 或 `}` 后继续解析。
 
 use li_ast::{
     FieldDef, FuncDecl, Ident, ImportDecl, Item, ModuleDecl, ModulePath, Param, Program, TypeDecl,
@@ -13,6 +13,7 @@ use li_lexer::{Token, TokenKind};
 mod expr;
 mod stmt;
 mod ty;
+mod view;
 
 /// li 语言递归下降解析器。
 pub struct Parser {
@@ -92,8 +93,9 @@ impl Parser {
             TokenKind::Import => self.parse_import().map(Item::Import),
             TokenKind::Func => self.parse_function().map(Item::Function),
             TokenKind::Type => self.parse_type_decl().map(Item::Type),
+            TokenKind::View => self.parse_view().map(Item::View),
             _ => {
-                self.error_expected("`模块`、`导入`、`函数` 或 `类型`");
+                self.error_expected("`模块`、`导入`、`函数`、`类型` 或 `视图`");
                 None
             }
         }
@@ -275,12 +277,22 @@ impl Parser {
         &self.tokens[self.current]
     }
 
+    fn peek_next(&self) -> Option<&Token> {
+        self.tokens.get(self.current + 1)
+    }
+
     fn is_eof(&self) -> bool {
         self.peek().is_eof()
     }
 
     fn check(&self, kind: &TokenKind) -> bool {
         std::mem::discriminant(&self.peek().kind) == std::mem::discriminant(kind)
+    }
+
+    fn check_next(&self, kind: &TokenKind) -> bool {
+        self.peek_next()
+            .map(|token| std::mem::discriminant(&token.kind) == std::mem::discriminant(kind))
+            .unwrap_or(false)
     }
 
     fn eat(&mut self, kind: &TokenKind) -> bool {
@@ -370,7 +382,11 @@ impl Parser {
             }
 
             match &self.peek().kind {
-                TokenKind::Module | TokenKind::Import | TokenKind::Func | TokenKind::Type => return,
+                TokenKind::Module
+                | TokenKind::Import
+                | TokenKind::Func
+                | TokenKind::Type
+                | TokenKind::View => return,
                 _ => {}
             }
 

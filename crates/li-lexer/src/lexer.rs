@@ -134,6 +134,16 @@ impl<'a> Lexer<'a> {
         if ch == '「' {
             return self.lex_string(start);
         }
+        if matches!(ch, '"' | '\'') {
+            self.advance();
+            self.diagnostics.push(
+                Diagnostic::error("字符串必须使用中文书名号「」作为定界符")
+                    .with_span(Span::new(start, self.position()))
+                    .with_expected("`「...」`")
+                    .with_actual(format!("`{ch}`")),
+            );
+            return None;
+        }
         if is_identifier_start(ch) {
             return Some(self.lex_identifier());
         }
@@ -537,6 +547,7 @@ fn keyword_kind(text: &str) -> Option<TokenKind> {
         "类型" | "type" => TokenKind::Type,
         "打印" | "print" => TokenKind::Print,
         "输入" | "input" => TokenKind::Input,
+        "视图" | "view" => TokenKind::View,
 
         "整数" | "int" | "integer" => TokenKind::IntegerType,
         "小数" | "float" => TokenKind::FloatType,

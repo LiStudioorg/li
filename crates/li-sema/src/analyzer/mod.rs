@@ -176,7 +176,7 @@ impl Analyzer {
                     self.analyze_items(&module.items);
                     self.symbols.pop_scope();
                 }
-                Item::Import(_) | Item::Type(_) => {}
+                Item::Import(_) | Item::Type(_) | Item::View(_) => {}
             }
         }
     }
@@ -317,7 +317,7 @@ fn collect_raw_declarations<'a>(items: &'a [Item], raw: &mut RawDeclarations<'a>
             Item::Function(function) => raw.functions.push(function),
             Item::Type(declaration) => raw.structs.push(declaration),
             Item::Module(module) => collect_raw_declarations(&module.items, raw),
-            Item::Import(_) => {}
+            Item::Import(_) | Item::View(_) => {}
         }
     }
 }

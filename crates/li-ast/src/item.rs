@@ -5,6 +5,7 @@ use li_errors::Span;
 use crate::common::Ident;
 use crate::stmt::Block;
 use crate::ty::Type;
+use crate::view::ViewDecl;
 
 /// 一份完整的 li 源文件。
 #[derive(Clone, Debug, PartialEq)]
@@ -26,6 +27,8 @@ pub enum Item {
     Function(FuncDecl),
     /// 类型声明，对应结构体定义。
     Type(TypeDecl),
+    /// `.lui` 视图声明。
+    View(ViewDecl),
 }
 
 impl Item {
@@ -36,6 +39,7 @@ impl Item {
             Self::Import(item) => item.span,
             Self::Function(item) => item.span,
             Self::Type(item) => item.span,
+            Self::View(item) => item.span,
         }
     }
 }

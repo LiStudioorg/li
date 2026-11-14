@@ -12,11 +12,13 @@ name = "li"
 path = "src/main.rs"
 
 [dependencies]
+li-ast.workspace = true
 li-parser.workspace = true
 li-sema.workspace = true
 li-ir.workspace = true
 li-codegen-js.workspace = true
 li-codegen-bytecode.workspace = true
+li-codegen-html.workspace = true
 li-vm.workspace = true
 
 [lints]

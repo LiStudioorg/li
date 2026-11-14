@@ -4,7 +4,7 @@
 //! 所有节点都携带 [`li_errors::Span`]，便于后续阶段报告精确的行列位置。
 //!
 //! 语法树按以下层次组织：
-//! - [`Program`] 与 [`Item`]：顶层程序项，包括模块、导入、函数与类型声明；
+//! - [`Program`] 与 [`Item`]：顶层程序项，包括模块、导入、函数、类型声明与视图声明；
 //! - [`Stmt`] 与 [`Block`]：函数体中的语句与语句块；
 //! - [`Expr`]：表达式；
 //! - [`Type`]：类型标注；
@@ -16,6 +16,7 @@ mod item;
 mod pattern;
 mod stmt;
 mod ty;
+mod view;
 
 pub use common::{Ident, Literal};
 pub use expr::{BinaryOp, Expr, ExprKind, UnaryOp};
@@ -28,3 +29,4 @@ pub use stmt::{
     PrintStmt, ReturnStmt, Stmt, WhileStmt,
 };
 pub use ty::{Type, TypeKind};
+pub use view::{ViewAttribute, ViewContent, ViewDecl, ViewNode, ViewValue, ViewValueKind};

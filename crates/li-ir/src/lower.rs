@@ -264,7 +264,7 @@ fn collect_declarations<'a>(
             Item::Function(function) => functions.push(function),
             Item::Type(declaration) => structs.push(declaration),
             Item::Module(module) => collect_declarations(&module.items, functions, structs),
-            Item::Import(_) => {}
+            Item::Import(_) | Item::View(_) => {}
         }
     }
 }

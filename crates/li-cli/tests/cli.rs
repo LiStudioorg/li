@@ -111,6 +111,107 @@ fn compiles_and_executes_bytecode() {
 }
 
 #[test]
+fn compiles_a_lui_view_to_html() {
+    let directory = temp_directory("li-cli-视图");
+    let input = directory.join("你好.lui");
+    fs::write(
+        &input,
+        include_str!("../../li-parser/tests/fixtures/hello.lui"),
+    )
+    .expect("无法写入 .lui 视图文件");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_li"))
+        .arg("编译-html")
+        .arg(&input)
+        .output()
+        .expect("无法启动 li 编译器");
+
+    assert!(
+        output.status.success(),
+        "编译失败：\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("已生成 HTML"), "缺少成功提示：{stdout}");
+
+    let html_path = directory.join("你好.html");
+    let html = fs::read_to_string(&html_path).expect("未生成 .html 文件");
+    assert!(html.contains("<!DOCTYPE html>"), "HTML：\n{html}");
+    assert!(
+        html.contains(r#"<html lang="zh-CN">"#),
+        "缺少语言声明：\n{html}"
+    );
+    assert!(
+        html.contains("<h1>你好，li！</h1>"),
+        "缺少中文标题：\n{html}"
+    );
+    assert!(
+        html.contains(r#"<button class="主按钮" type="button">点我</button>"#),
+        "缺少按钮结构：\n{html}"
+    );
+    assert!(
+        html.contains("<li>声明式视图</li>"),
+        "缺少列表结构：\n{html}"
+    );
+    assert!(html.contains("</html>"), "HTML 文档未闭合：\n{html}");
+
+    let _ = fs::remove_dir_all(&directory);
+}
+
+#[test]
+fn rejects_non_lui_input_for_html_compilation() {
+    let directory = temp_directory("li-cli-视图后缀");
+    let input = directory.join("不是视图.li");
+    fs::write(&input, "视图 { 容器 { } }\n").expect("无法写入测试文件");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_li"))
+        .arg("编译-html")
+        .arg(&input)
+        .output()
+        .expect("无法启动 li 编译器");
+
+    assert!(!output.status.success(), "非 .lui 文件不应编译成功");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains(".lui"), "错误信息缺少后缀说明：{stderr}");
+    assert!(
+        !directory.join("不是视图.html").exists(),
+        "失败时不应生成 HTML 文件"
+    );
+
+    let _ = fs::remove_dir_all(&directory);
+}
+
+#[test]
+fn rejects_views_when_compiling_executable_code() {
+    let directory = temp_directory("li-cli-视图不可执行");
+    let input = directory.join("视图混入.li");
+    fs::write(&input, "视图 { 容器 { } }\n").expect("无法写入测试文件");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_li"))
+        .arg("编译-js")
+        .arg(&input)
+        .output()
+        .expect("无法启动 li 编译器");
+
+    assert!(!output.status.success(), "视图声明不应被当作可执行代码");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("视图声明"), "错误信息缺少原因：{stderr}");
+    assert!(
+        stderr.contains("编译-html"),
+        "错误信息缺少 HTML 编译提示：{stderr}"
+    );
+    assert!(
+        !directory.join("视图混入.js").exists(),
+        "失败时不应生成 JavaScript 文件"
+    );
+
+    let _ = fs::remove_dir_all(&directory);
+}
+
+#[test]
 fn reports_chinese_semantic_errors_with_positions() {
     let directory = temp_directory("li-cli-失败");
     let input = directory.join("错误.li");

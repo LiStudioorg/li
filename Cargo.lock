@@ -13,7 +13,9 @@ dependencies = [
 name = "li-cli"
 version = "0.1.0"
 dependencies = [
+ "li-ast",
  "li-codegen-bytecode",
+ "li-codegen-html",
  "li-codegen-js",
  "li-ir",
  "li-parser",
@@ -29,6 +31,15 @@ dependencies = [
  "li-ir",
  "li-parser",
  "li-sema",
+]
+
+[[package]]
+name = "li-codegen-html"
+version = "0.1.0"
+dependencies = [
+ "li-ast",
+ "li-errors",
+ "li-parser",
 ]
 
 [[package]]

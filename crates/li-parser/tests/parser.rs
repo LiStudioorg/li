@@ -5,7 +5,7 @@
 
 use li_ast::{
     BinaryOp, Expr, ExprKind, FuncDecl, Item, Literal, PatternKind, Program, Stmt, TypeKind,
-    UnaryOp,
+    UnaryOp, ViewContent, ViewValueKind,
 };
 use li_errors::DiagnosticBag;
 use li_parser::{parse, parse_source};
@@ -690,7 +690,119 @@ fn recovers_from_multiple_syntax_errors() {
     assert!(message.contains("实际 `=`"), "诊断：\n{message}");
     assert!(message.contains("期望 表达式"), "诊断：\n{message}");
     assert!(
-        message.contains("期望 `模块`、`导入`、`函数` 或 `类型`"),
+        message.contains("期望 `模块`、`导入`、`函数`、`类型` 或 `视图`"),
         "诊断：\n{message}"
     );
+}
+
+/// 查找唯一的顶层视图声明。
+fn view(program: &Program) -> &li_ast::ViewDecl {
+    program
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Item::View(view) => Some(view),
+            _ => None,
+        })
+        .expect("未找到视图声明")
+}
+
+#[test]
+fn parses_view_fixture() {
+    let program = parse_ok(include_str!("fixtures/hello.lui"));
+    assert_eq!(program.items.len(), 1);
+
+    let view = view(&program);
+    assert_eq!(view.attributes.len(), 2);
+    assert_eq!(view.attributes[0].name.as_str(), "标题");
+    assert_eq!(
+        view.attributes[0].value.kind,
+        ViewValueKind::Text("你好，li".to_owned())
+    );
+    assert_eq!(view.attributes[1].name.as_str(), "语言");
+
+    let ViewContent::Children(children) = &view.content else {
+        panic!("视图根节点应包含子节点，实际 {:?}", view.content);
+    };
+    assert_eq!(children.len(), 1);
+
+    let container = &children[0];
+    assert_eq!(container.name.as_str(), "容器");
+    let ViewContent::Children(children) = &container.content else {
+        panic!("容器应包含子节点，实际 {:?}", container.content);
+    };
+    let names = children
+        .iter()
+        .map(|child| child.name.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["标题", "段落", "列表", "按钮"]);
+
+    let ViewContent::Children(title_children) = &children[0].content else {
+        panic!("标题应包含子节点");
+    };
+    assert_eq!(title_children.len(), 1);
+    assert_eq!(title_children[0].name.as_str(), "文本");
+    let ViewContent::Text(title_text) = &title_children[0].content else {
+        panic!("文本节点应包含字符串");
+    };
+    assert_eq!(title_text, "你好，li！");
+
+    let list = &children[2];
+    let ViewContent::Children(list_items) = &list.content else {
+        panic!("列表应包含列表项");
+    };
+    assert_eq!(list_items.len(), 2);
+    assert_eq!(list_items[0].name.as_str(), "列表项");
+
+    let button = &children[3];
+    assert_eq!(button.attributes.len(), 2);
+    assert_eq!(button.attributes[1].name.as_str(), "类型");
+    assert_eq!(
+        button.attributes[1].value.kind,
+        ViewValueKind::Text("button".to_owned())
+    );
+    assert_eq!(button.name.span.start.line, 12);
+}
+
+#[test]
+fn parses_view_keywords_as_names() {
+    // `列表` 是类型关键字，`类型` 是顶层关键字；在视图上下文中都应作为名称使用。
+    let program =
+        parse_ok("视图 { 列表 { 列表项 { 类: 条目, 文本 { 「第一项」 } } } 按钮 { 类型: 按钮 } }");
+    let view = view(&program);
+
+    let ViewContent::Children(children) = &view.content else {
+        panic!("视图根节点应包含子节点");
+    };
+    assert_eq!(children[0].name.as_str(), "列表");
+
+    let ViewContent::Children(items) = &children[0].content else {
+        panic!("列表应包含子节点");
+    };
+    assert_eq!(
+        items[0].attributes[0].value.kind,
+        ViewValueKind::Identifier("条目".to_owned())
+    );
+    assert_eq!(children[1].attributes[0].name.as_str(), "类型");
+}
+
+#[test]
+fn view_strings_require_chinese_quotes() {
+    let errors = parse_err("视图 { 文本 { \"你好\" } }");
+    let message = errors.to_string();
+
+    assert!(
+        message.contains("字符串必须使用中文书名号「」作为定界符"),
+        "诊断：\n{message}"
+    );
+    assert!(message.contains("第 1 行第 11 列"), "诊断：\n{message}");
+}
+
+#[test]
+fn recovers_from_a_missing_view_value() {
+    let errors = parse_err("视图 { 容器 { 类: } }");
+    let message = errors.to_string();
+
+    assert!(message.contains("期望 属性值"), "诊断：\n{message}");
+    assert!(message.contains("第 1 行"), "诊断：\n{message}");
 }
