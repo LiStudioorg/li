@@ -8,6 +8,7 @@ use li_ast::{BinaryOp, Expr, ExprKind, Ident, UnaryOp};
 use li_errors::Diagnostic;
 
 use super::Analyzer;
+use crate::symbols::FunctionSignature;
 use crate::ty::Ty;
 
 impl Analyzer {
@@ -29,7 +30,21 @@ impl Analyzer {
 
     fn infer_identifier(&mut self, ident: &Ident) -> Ty {
         match self.symbols.lookup(&ident.name) {
-            Some(variable) => variable.ty.clone(),
+            Some(variable) => {
+                let ty = variable.ty.clone();
+                if ty.is_raw_pointer() && self.unsafe_depth == 0 {
+                    self.diagnostics.push(
+                        Diagnostic::error(format!(
+                            "原生指针「{}」只能在「不安全」块中使用",
+                            ident.name
+                        ))
+                        .with_span(ident.span)
+                        .with_expected("位于「不安全 { ... }」块内")
+                        .with_actual("安全代码"),
+                    );
+                }
+                ty
+            }
             None => {
                 self.diagnostics.push(
                     Diagnostic::error(format!("未定义的变量「{}」", ident.name))
@@ -84,6 +99,12 @@ impl Analyzer {
 
         match op {
             BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide => {
+                // `加` 对两个字符串表示拼接；只要有一侧不是字符串，
+                // 仍按原有的数值规则检查，保持严格的类型诊断。
+                if op == BinaryOp::Add && left_ty == Ty::String && right_ty == Ty::String {
+                    return Ty::String;
+                }
+
                 let Some(left_ty) = self.numeric_operand(left, left_ty) else {
                     return Ty::Error;
                 };
@@ -156,6 +177,10 @@ impl Analyzer {
     }
 
     fn infer_call(&mut self, expr: &Expr, callee: &Expr, args: &[Expr]) -> Ty {
+        if let ExprKind::FieldAccess { object, field } = &callee.kind {
+            return self.infer_builtin_call(object, field, args);
+        }
+
         let function_name = match &callee.kind {
             ExprKind::Identifier(ident) => Some(ident.name.clone()),
             _ => {
@@ -172,15 +197,18 @@ impl Analyzer {
         let signature = if let Some(name) = &function_name {
             match self.functions.get(name).cloned() {
                 Some(signature) => Some(signature),
-                None => {
-                    self.diagnostics.push(
-                        Diagnostic::error(format!("未定义的函数「{name}」"))
-                            .with_span(callee.span)
-                            .with_expected("已声明的函数")
-                            .with_actual(format!("`{name}`")),
-                    );
-                    None
-                }
+                None => match SemaBuiltinFunction::from_name(name) {
+                    Some(builtin) => Some(builtin.signature()),
+                    None => {
+                        self.diagnostics.push(
+                            Diagnostic::error(format!("未定义的函数「{name}」"))
+                                .with_span(callee.span)
+                                .with_expected("已声明的函数或内置函数")
+                                .with_actual(format!("`{name}`")),
+                        );
+                        None
+                    }
+                },
             }
         } else {
             None
@@ -218,7 +246,210 @@ impl Analyzer {
             }
         }
 
+        if signature.return_type.is_raw_pointer() && self.unsafe_depth == 0 {
+            self.diagnostics.push(
+                Diagnostic::error(format!(
+                    "函数「{}」返回原生指针，调用结果必须在「不安全」块中使用",
+                    function_name.as_deref().unwrap_or("")
+                ))
+                .with_span(expr.span)
+                .with_expected("位于「不安全 { ... }」块内")
+                .with_actual("安全代码"),
+            );
+        }
+
         signature.return_type
+    }
+
+    /// 推导字符串与列表的内置方法调用。
+    ///
+    /// 方法调用与结构体字段访问共享点号语法，因此在调用上下文中必须先
+    /// 判断接收者是否为字符串或列表；可选值与结果值仍然要求先经过匹配。
+    fn infer_builtin_call(&mut self, object: &Expr, field: &Ident, args: &[Expr]) -> Ty {
+        let receiver_ty = self.infer_expr(object);
+        let receiver_ty = self.ensure_plain(object, receiver_ty);
+
+        match receiver_ty {
+            Ty::String => self.infer_string_method(field, args),
+            Ty::List(element) => self.infer_list_method(field, args, *element),
+            Ty::Dictionary { key, value } => {
+                self.infer_dictionary_method(field, args, *key, *value)
+            }
+            Ty::Error => {
+                self.infer_arguments(args);
+                Ty::Error
+            }
+            other => {
+                self.infer_arguments(args);
+                self.diagnostics.push(
+                    Diagnostic::error(format!("类型「{other}」不支持方法「{}」", field.name))
+                        .with_span(field.span)
+                        .with_expected("字符串或列表")
+                        .with_actual(other.to_string())
+                        .with_note("内置方法目前只支持字符串与列表"),
+                );
+                Ty::Error
+            }
+        }
+    }
+
+    fn infer_string_method(&mut self, field: &Ident, args: &[Expr]) -> Ty {
+        match field.name.as_str() {
+            "长度" => {
+                self.check_method_args(field, "字符串.长度", args, &[]);
+                Ty::Integer
+            }
+            "拼接" => {
+                self.check_method_args(field, "字符串.拼接", args, &[Ty::String]);
+                Ty::String
+            }
+            "转整数" => {
+                self.check_method_args(field, "字符串.转整数", args, &[]);
+                Ty::Result {
+                    ok: Box::new(Ty::Integer),
+                    error: Box::new(Ty::String),
+                }
+            }
+            "包含" => {
+                self.check_method_args(field, "字符串.包含", args, &[Ty::String]);
+                Ty::Bool
+            }
+            "字符" => {
+                self.check_method_args(field, "字符串.字符", args, &[Ty::Integer]);
+                Ty::Optional(Box::new(Ty::String))
+            }
+            "切片" => {
+                self.check_method_args(field, "字符串.切片", args, &[Ty::Integer, Ty::Integer]);
+                Ty::String
+            }
+            "查找" => {
+                self.check_method_args(field, "字符串.查找", args, &[Ty::String]);
+                Ty::Optional(Box::new(Ty::Integer))
+            }
+            "替换" => {
+                self.check_method_args(field, "字符串.替换", args, &[Ty::String, Ty::String]);
+                Ty::String
+            }
+            "分割" => {
+                self.check_method_args(field, "字符串.分割", args, &[Ty::String]);
+                Ty::List(Box::new(Ty::String))
+            }
+            other => {
+                self.infer_arguments(args);
+                self.diagnostics.push(
+                    Diagnostic::error(format!("字符串没有方法「{other}」"))
+                        .with_span(field.span)
+                        .with_expected("长度、拼接、转整数、包含、字符、切片、查找、替换 或 分割")
+                        .with_actual(format!("`{other}`")),
+                );
+                Ty::Error
+            }
+        }
+    }
+
+    fn infer_list_method(&mut self, field: &Ident, args: &[Expr], element: Ty) -> Ty {
+        match field.name.as_str() {
+            "长度" => {
+                self.check_method_args(field, "列表.长度", args, &[]);
+                Ty::Integer
+            }
+            "添加" => {
+                self.check_method_args(field, "列表.添加", args, std::slice::from_ref(&element));
+                Ty::List(Box::new(element))
+            }
+            "获取" => {
+                self.check_method_args(field, "列表.获取", args, &[Ty::Integer]);
+                Ty::Optional(Box::new(element))
+            }
+            "删除" => {
+                self.check_method_args(field, "列表.删除", args, &[Ty::Integer]);
+                Ty::Bool
+            }
+            other => {
+                self.infer_arguments(args);
+                self.diagnostics.push(
+                    Diagnostic::error(format!("列表没有方法「{other}」"))
+                        .with_span(field.span)
+                        .with_expected("长度、添加、获取 或 删除")
+                        .with_actual(format!("`{other}`")),
+                );
+                Ty::Error
+            }
+        }
+    }
+
+    fn infer_dictionary_method(&mut self, field: &Ident, args: &[Expr], key: Ty, value: Ty) -> Ty {
+        match field.name.as_str() {
+            "长度" => {
+                self.check_method_args(field, "字典.长度", args, &[]);
+                Ty::Integer
+            }
+            "插入" => {
+                self.check_method_args(field, "字典.插入", args, &[key.clone(), value.clone()]);
+                Ty::Dictionary {
+                    key: Box::new(key),
+                    value: Box::new(value),
+                }
+            }
+            "获取" => {
+                self.check_method_args(field, "字典.获取", args, &[key]);
+                Ty::Optional(Box::new(value))
+            }
+            "删除" => {
+                self.check_method_args(field, "字典.删除", args, &[key]);
+                Ty::Bool
+            }
+            "包含键" => {
+                self.check_method_args(field, "字典.包含键", args, &[key]);
+                Ty::Bool
+            }
+            other => {
+                self.infer_arguments(args);
+                self.diagnostics.push(
+                    Diagnostic::error(format!("字典没有方法「{other}」"))
+                        .with_span(field.span)
+                        .with_expected("长度、插入、获取、删除 或 包含键")
+                        .with_actual(format!("`{other}`")),
+                );
+                Ty::Error
+            }
+        }
+    }
+
+    /// 检查内置方法的实参数量与类型。
+    fn check_method_args(&mut self, field: &Ident, method: &str, args: &[Expr], expected: &[Ty]) {
+        let actual = args
+            .iter()
+            .map(|argument| self.infer_expr(argument))
+            .collect::<Vec<_>>();
+
+        if args.len() != expected.len() {
+            self.diagnostics.push(
+                Diagnostic::error("方法参数数量不匹配")
+                    .with_span(field.span)
+                    .with_expected(format!("{} 个参数", expected.len()))
+                    .with_actual(format!("{} 个参数", args.len()))
+                    .with_note(format!("方法「{method}」")),
+            );
+        }
+
+        for (index, (argument, actual)) in args.iter().zip(&actual).enumerate() {
+            if let Some(expected) = expected.get(index) {
+                self.check_compatible(
+                    argument.span,
+                    expected,
+                    actual,
+                    &format!("第 {} 个参数", index + 1),
+                );
+            }
+        }
+    }
+
+    /// 只推导实参类型，用于未知方法等场景，以便继续发现实参内部的独立错误。
+    fn infer_arguments(&mut self, args: &[Expr]) {
+        for argument in args {
+            let _ = self.infer_expr(argument);
+        }
     }
 
     fn infer_field_access(&mut self, object: &Expr, field: &Ident) -> Ty {
@@ -248,6 +479,48 @@ impl Analyzer {
                 }
             }
             Ty::Error => Ty::Error,
+            Ty::String => {
+                if matches!(field.name.as_str(), "长度" | "拼接" | "转整数" | "包含") {
+                    self.report_method_requires_call(field);
+                } else {
+                    self.diagnostics.push(
+                        Diagnostic::error(format!("字符串没有字段「{}」", field.name))
+                            .with_span(field.span)
+                            .with_expected("字符串内置方法调用")
+                            .with_actual(format!("`{}`", field.name)),
+                    );
+                }
+                Ty::Error
+            }
+            Ty::List(_) => {
+                if matches!(field.name.as_str(), "长度" | "添加" | "获取" | "删除") {
+                    self.report_method_requires_call(field);
+                } else {
+                    self.diagnostics.push(
+                        Diagnostic::error(format!("列表没有字段「{}」", field.name))
+                            .with_span(field.span)
+                            .with_expected("列表内置方法调用")
+                            .with_actual(format!("`{}`", field.name)),
+                    );
+                }
+                Ty::Error
+            }
+            Ty::Dictionary { .. } => {
+                if matches!(
+                    field.name.as_str(),
+                    "长度" | "插入" | "获取" | "删除" | "包含键"
+                ) {
+                    self.report_method_requires_call(field);
+                } else {
+                    self.diagnostics.push(
+                        Diagnostic::error(format!("字典没有字段「{}」", field.name))
+                            .with_span(field.span)
+                            .with_expected("字典内置方法调用")
+                            .with_actual(format!("`{}`", field.name)),
+                    );
+                }
+                Ty::Error
+            }
             other => {
                 self.diagnostics.push(
                     Diagnostic::error("不能访问字段")
@@ -259,6 +532,17 @@ impl Analyzer {
                 Ty::Error
             }
         }
+    }
+
+    /// 点号后跟已知方法名但没有括号时，给出明确的调用提示。
+    fn report_method_requires_call(&mut self, field: &Ident) {
+        self.diagnostics.push(
+            Diagnostic::error(format!("方法「{}」必须使用括号调用", field.name))
+                .with_span(field.span)
+                .with_expected(format!("`{}(...)`", field.name))
+                .with_actual(format!("`{}`", field.name))
+                .with_note("内置方法通过点号调用，例如 `列表.长度()`"),
+        );
     }
 
     fn infer_index(&mut self, object: &Expr, index: &Expr) -> Ty {
@@ -354,6 +638,55 @@ impl Analyzer {
                     .with_note("算术运算只接受整数或小数"),
             );
             None
+        }
+    }
+}
+
+/// 语义分析阶段识别的语言级内置函数。
+///
+/// 这里不依赖 `li-ir`，以保持前端只依赖 AST 与诊断；IR 层会用自己的
+/// [`li_ir::BuiltinFunction`] 表达同一组能力。
+#[derive(Clone, Copy, Debug)]
+enum SemaBuiltinFunction {
+    ReadText,
+    WriteText,
+    NewDictionary,
+}
+
+impl SemaBuiltinFunction {
+    fn from_name(name: &str) -> Option<Self> {
+        let function = match name {
+            "读取文本" => Self::ReadText,
+            "写入文本" => Self::WriteText,
+            "新建字典" => Self::NewDictionary,
+            _ => return None,
+        };
+        Some(function)
+    }
+
+    fn signature(self) -> FunctionSignature {
+        match self {
+            Self::ReadText => FunctionSignature {
+                params: vec![Ty::String],
+                return_type: Ty::Result {
+                    ok: Box::new(Ty::String),
+                    error: Box::new(Ty::String),
+                },
+            },
+            Self::WriteText => FunctionSignature {
+                params: vec![Ty::String, Ty::String],
+                return_type: Ty::Result {
+                    ok: Box::new(Ty::Integer),
+                    error: Box::new(Ty::String),
+                },
+            },
+            Self::NewDictionary => FunctionSignature {
+                params: Vec::new(),
+                return_type: Ty::Dictionary {
+                    key: Box::new(Ty::Error),
+                    value: Box::new(Ty::Error),
+                },
+            },
         }
     }
 }

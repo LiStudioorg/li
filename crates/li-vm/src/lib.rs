@@ -10,10 +10,11 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
+use std::fs;
 use std::io::{self, Write};
 use std::rc::Rc;
 
-use li_codegen_bytecode::{Constant, Instruction, Opcode, Program};
+use li_codegen_bytecode::{BuiltinFunction, BuiltinMethod, Constant, Instruction, Opcode, Program};
 use li_errors::Span;
 
 /// 最大调用深度，避免无限递归耗尽内存。
@@ -26,6 +27,102 @@ pub struct StructValue {
     pub type_name: String,
     /// 字段表。
     pub fields: HashMap<String, Value>,
+}
+
+/// 字典键。第一版字典只允许可哈希的标量键。
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum DictionaryKey {
+    /// 整数键。
+    Integer(i64),
+    /// 小数键；使用位模式保证哈希与相等一致。
+    Float(u64),
+    /// 布尔键。
+    Bool(bool),
+    /// 字符串键。
+    String(String),
+}
+
+impl DictionaryKey {
+    /// 从运行期值构造字典键；非标量值返回 `None`。
+    fn from_value(value: &Value) -> Option<Self> {
+        match value {
+            Value::Integer(value) => Some(Self::Integer(*value)),
+            Value::Float(value) => {
+                // 统一正零与负零，避免键语义出现意外差异。
+                let bits = if *value == 0.0 {
+                    0.0_f64.to_bits()
+                } else {
+                    value.to_bits()
+                };
+                Some(Self::Float(bits))
+            }
+            Value::Bool(value) => Some(Self::Bool(*value)),
+            Value::String(value) => Some(Self::String(value.clone())),
+            _ => None,
+        }
+    }
+
+    /// 返回键的显示文本。
+    fn display_text(&self) -> String {
+        match self {
+            Self::Integer(value) => value.to_string(),
+            Self::Float(bits) => f64::from_bits(*bits).to_string(),
+            Self::Bool(true) => "真".to_owned(),
+            Self::Bool(false) => "假".to_owned(),
+            Self::String(value) => value.clone(),
+        }
+    }
+}
+
+/// 字典运行期值，按插入顺序保存键值对。
+#[derive(Clone, Debug, PartialEq)]
+pub struct DictionaryValue {
+    /// 键值表。
+    entries: HashMap<DictionaryKey, Value>,
+    /// 插入顺序。
+    order: Vec<DictionaryKey>,
+}
+
+impl DictionaryValue {
+    /// 创建空字典。
+    fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+            order: Vec::new(),
+        }
+    }
+
+    /// 返回键值对数量。
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// 插入键值对；已存在的键只更新值，不改变顺序。
+    fn insert(&mut self, key: DictionaryKey, value: Value) {
+        if !self.entries.contains_key(&key) {
+            self.order.push(key.clone());
+        }
+        self.entries.insert(key, value);
+    }
+
+    /// 按键读取值。
+    fn get(&self, key: &DictionaryKey) -> Option<&Value> {
+        self.entries.get(key)
+    }
+
+    /// 按键删除键值对。
+    fn remove(&mut self, key: &DictionaryKey) -> bool {
+        if self.entries.remove(key).is_none() {
+            return false;
+        }
+        self.order.retain(|existing| existing != key);
+        true
+    }
+
+    /// 是否包含指定键。
+    fn contains_key(&self, key: &DictionaryKey) -> bool {
+        self.entries.contains_key(key)
+    }
 }
 
 /// 虚拟机运行期值。
@@ -43,6 +140,8 @@ pub enum Value {
     Null,
     /// 列表。使用共享可变容器，保持与引用语义一致。
     List(Rc<RefCell<Vec<Value>>>),
+    /// 字典。使用共享可变容器，保持与引用语义一致。
+    Dictionary(Rc<RefCell<DictionaryValue>>),
     /// 结构体。使用共享可变容器。
     Struct(Rc<RefCell<StructValue>>),
     /// 可选值。
@@ -61,6 +160,7 @@ impl Value {
             Self::String(_) => "字符串",
             Self::Null => "空",
             Self::List(_) => "列表",
+            Self::Dictionary(_) => "字典",
             Self::Struct(_) => "结构体",
             Self::Optional(_) => "可选值",
             Self::ResultValue(_) => "结果值",
@@ -86,6 +186,20 @@ impl Value {
                         .iter()
                         .zip(right.iter())
                         .all(|(left, right)| left.equals(right))
+            }
+            (Self::Dictionary(left), Self::Dictionary(right)) => {
+                if Rc::ptr_eq(left, right) {
+                    return true;
+                }
+                let left = left.borrow();
+                let right = right.borrow();
+                left.len() == right.len()
+                    && left.entries.iter().all(|(key, value)| {
+                        right
+                            .entries
+                            .get(key)
+                            .is_some_and(|other| value.equals(other))
+                    })
             }
             (Self::Struct(left), Self::Struct(right)) => {
                 if Rc::ptr_eq(left, right) {
@@ -119,7 +233,7 @@ impl Value {
     fn to_display_text(&self) -> String {
         match self {
             Self::Integer(value) => value.to_string(),
-            Self::Float(value) => format!("{value:?}"),
+            Self::Float(value) => value.to_string(),
             Self::Bool(true) => "真".to_owned(),
             Self::Bool(false) => "假".to_owned(),
             Self::String(value) => value.clone(),
@@ -132,6 +246,20 @@ impl Value {
                     .collect::<Vec<_>>()
                     .join(", ");
                 format!("[{items}]")
+            }
+            Self::Dictionary(value) => {
+                let value = value.borrow();
+                let items = value
+                    .order
+                    .iter()
+                    .filter_map(|key| {
+                        value.entries.get(key).map(|item| {
+                            format!("{}: {}", key.display_text(), item.to_display_text())
+                        })
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{{{items}}}")
             }
             Self::Struct(value) => {
                 let value = value.borrow();
@@ -424,6 +552,13 @@ impl<'a> Vm<'a> {
                     let arguments = self.pop_arguments(argc)?;
                     self.advance(ip + 1);
                     self.push_function_frame(&name, arguments)?;
+                }
+                Opcode::InvokeBuiltin => {
+                    let name = instruction.name_arg(0).unwrap_or("").to_owned();
+                    let argc = instruction.integer_arg(1).unwrap_or(usize::MAX);
+                    let value = self.invoke_builtin(&name, argc)?;
+                    self.push(value);
+                    self.advance(ip + 1);
                 }
                 Opcode::Return => {
                     let value = self.pop()?;
@@ -870,6 +1005,306 @@ impl<'a> Vm<'a> {
         Ok(())
     }
 
+    /// 执行 `INVOKE_BUILTIN` 指令。
+    ///
+    /// 带点号的名称表示内置方法，操作数栈上依次是接收者与实参；
+    /// 不带点号的名称表示全局内置函数，只有实参。
+    fn invoke_builtin(&mut self, name: &str, argc: usize) -> Result<Value, RuntimeError> {
+        let arguments = self.pop_arguments(argc)?;
+
+        if BuiltinMethod::from_qualified_name(name).is_some() {
+            let receiver = self.pop()?;
+            self.invoke_method(name, receiver, arguments)
+        } else {
+            self.invoke_function(name, arguments)
+        }
+    }
+
+    fn invoke_method(
+        &self,
+        name: &str,
+        receiver: Value,
+        arguments: Vec<Value>,
+    ) -> Result<Value, RuntimeError> {
+        match name {
+            "字符串.长度" => {
+                let Value::String(text) = &receiver else {
+                    return Err(self.builtin_receiver_error(name, &receiver));
+                };
+                Ok(Value::Integer(text.chars().count() as i64))
+            }
+            "字符串.拼接" => {
+                let Value::String(text) = &receiver else {
+                    return Err(self.builtin_receiver_error(name, &receiver));
+                };
+                let suffix = self.string_argument(name, &arguments, 0)?;
+                Ok(Value::String(format!("{text}{suffix}")))
+            }
+            "字符串.转整数" => {
+                let Value::String(text) = &receiver else {
+                    return Err(self.builtin_receiver_error(name, &receiver));
+                };
+                let result = match parse_integer_text(text) {
+                    Ok(value) => Value::ResultValue(Ok(Box::new(Value::Integer(value)))),
+                    Err(message) => Value::ResultValue(Err(Box::new(Value::String(message)))),
+                };
+                Ok(result)
+            }
+            "字符串.包含" => {
+                let Value::String(text) = &receiver else {
+                    return Err(self.builtin_receiver_error(name, &receiver));
+                };
+                let needle = self.string_argument(name, &arguments, 0)?;
+                Ok(Value::Bool(text.contains(&needle)))
+            }
+            "字符串.字符" => {
+                let Value::String(text) = &receiver else {
+                    return Err(self.builtin_receiver_error(name, &receiver));
+                };
+                let index = self.integer_argument(name, &arguments, 0)?;
+                if index < 0 {
+                    return Ok(Value::Optional(None));
+                }
+                let character = text
+                    .chars()
+                    .nth(index as usize)
+                    .map(|ch| Box::new(Value::String(ch.to_string())));
+                Ok(Value::Optional(character))
+            }
+            "字符串.切片" => {
+                let Value::String(text) = &receiver else {
+                    return Err(self.builtin_receiver_error(name, &receiver));
+                };
+                let start = self.integer_argument(name, &arguments, 0)?;
+                let end = self.integer_argument(name, &arguments, 1)?;
+                let characters = text.chars().collect::<Vec<_>>();
+                let start = start.max(0).min(characters.len() as i64) as usize;
+                let end = end.max(0).min(characters.len() as i64) as usize;
+                let slice = if start < end {
+                    characters[start..end].iter().collect()
+                } else {
+                    String::new()
+                };
+                Ok(Value::String(slice))
+            }
+            "字符串.查找" => {
+                let Value::String(text) = &receiver else {
+                    return Err(self.builtin_receiver_error(name, &receiver));
+                };
+                let needle = self.string_argument(name, &arguments, 0)?;
+                let found = text
+                    .find(&needle)
+                    .map(|byte_index| text[..byte_index].chars().count() as i64);
+                Ok(Value::Optional(
+                    found.map(|index| Box::new(Value::Integer(index))),
+                ))
+            }
+            "字符串.替换" => {
+                let Value::String(text) = &receiver else {
+                    return Err(self.builtin_receiver_error(name, &receiver));
+                };
+                let from = self.string_argument(name, &arguments, 0)?;
+                let to = self.string_argument(name, &arguments, 1)?;
+                Ok(Value::String(text.replace(&from, &to)))
+            }
+            "字符串.分割" => {
+                let Value::String(text) = &receiver else {
+                    return Err(self.builtin_receiver_error(name, &receiver));
+                };
+                let separator = self.string_argument(name, &arguments, 0)?;
+                let parts = if separator.is_empty() {
+                    text.chars()
+                        .map(|ch| Value::String(ch.to_string()))
+                        .collect::<Vec<_>>()
+                } else {
+                    text.split(&separator)
+                        .map(|part| Value::String(part.to_owned()))
+                        .collect::<Vec<_>>()
+                };
+                Ok(Value::List(Rc::new(RefCell::new(parts))))
+            }
+            "列表.长度" => {
+                let Value::List(values) = &receiver else {
+                    return Err(self.builtin_receiver_error(name, &receiver));
+                };
+                Ok(Value::Integer(values.borrow().len() as i64))
+            }
+            "列表.添加" => {
+                let Value::List(values) = &receiver else {
+                    return Err(self.builtin_receiver_error(name, &receiver));
+                };
+                let value = arguments
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| self.error("内置方法「列表.添加」缺少实参".to_owned()))?;
+                values.borrow_mut().push(value);
+                Ok(receiver)
+            }
+            "列表.获取" => {
+                let Value::List(values) = &receiver else {
+                    return Err(self.builtin_receiver_error(name, &receiver));
+                };
+                let index = self.integer_argument(name, &arguments, 0)?;
+                if index < 0 {
+                    return Ok(Value::Optional(None));
+                }
+                let value = values.borrow().get(index as usize).cloned().map(Box::new);
+                Ok(Value::Optional(value))
+            }
+            "列表.删除" => {
+                let Value::List(values) = &receiver else {
+                    return Err(self.builtin_receiver_error(name, &receiver));
+                };
+                let index = self.integer_argument(name, &arguments, 0)?;
+                if index < 0 {
+                    return Ok(Value::Bool(false));
+                }
+                let mut values = values.borrow_mut();
+                let index = index as usize;
+                if index >= values.len() {
+                    return Ok(Value::Bool(false));
+                }
+                values.remove(index);
+                Ok(Value::Bool(true))
+            }
+            "字典.长度" => {
+                let Value::Dictionary(dictionary) = &receiver else {
+                    return Err(self.builtin_receiver_error(name, &receiver));
+                };
+                Ok(Value::Integer(dictionary.borrow().len() as i64))
+            }
+            "字典.插入" => {
+                let Value::Dictionary(dictionary) = &receiver else {
+                    return Err(self.builtin_receiver_error(name, &receiver));
+                };
+                let key = arguments
+                    .first()
+                    .ok_or_else(|| self.error("内置方法「字典.插入」缺少键".to_owned()))?;
+                let value = arguments
+                    .get(1)
+                    .cloned()
+                    .ok_or_else(|| self.error("内置方法「字典.插入」缺少值".to_owned()))?;
+                let key = self.dictionary_key(key)?;
+                dictionary.borrow_mut().insert(key, value);
+                Ok(receiver)
+            }
+            "字典.获取" => {
+                let Value::Dictionary(dictionary) = &receiver else {
+                    return Err(self.builtin_receiver_error(name, &receiver));
+                };
+                let key = arguments
+                    .first()
+                    .ok_or_else(|| self.error("内置方法「字典.获取」缺少键".to_owned()))?;
+                let key = self.dictionary_key(key)?;
+                let value = dictionary.borrow().get(&key).cloned().map(Box::new);
+                Ok(Value::Optional(value))
+            }
+            "字典.删除" => {
+                let Value::Dictionary(dictionary) = &receiver else {
+                    return Err(self.builtin_receiver_error(name, &receiver));
+                };
+                let key = arguments
+                    .first()
+                    .ok_or_else(|| self.error("内置方法「字典.删除」缺少键".to_owned()))?;
+                let key = self.dictionary_key(key)?;
+                Ok(Value::Bool(dictionary.borrow_mut().remove(&key)))
+            }
+            "字典.包含键" => {
+                let Value::Dictionary(dictionary) = &receiver else {
+                    return Err(self.builtin_receiver_error(name, &receiver));
+                };
+                let key = arguments
+                    .first()
+                    .ok_or_else(|| self.error("内置方法「字典.包含键」缺少键".to_owned()))?;
+                let key = self.dictionary_key(key)?;
+                Ok(Value::Bool(dictionary.borrow().contains_key(&key)))
+            }
+            other => Err(self.error(format!("未知的内置方法「{other}」"))),
+        }
+    }
+
+    fn invoke_function(&self, name: &str, arguments: Vec<Value>) -> Result<Value, RuntimeError> {
+        match BuiltinFunction::from_name(name) {
+            Some(BuiltinFunction::ReadText) => {
+                let path = self.string_argument(name, &arguments, 0)?;
+                let result = match fs::read_to_string(&path) {
+                    Ok(text) => Value::ResultValue(Ok(Box::new(Value::String(text)))),
+                    Err(error) => Value::ResultValue(Err(Box::new(Value::String(format!(
+                        "无法读取文件「{path}」：{error}"
+                    ))))),
+                };
+                Ok(result)
+            }
+            Some(BuiltinFunction::WriteText) => {
+                let path = self.string_argument(name, &arguments, 0)?;
+                let content = self.string_argument(name, &arguments, 1)?;
+                let result = match fs::write(&path, content.as_bytes()) {
+                    Ok(()) => {
+                        Value::ResultValue(Ok(Box::new(Value::Integer(content.len() as i64))))
+                    }
+                    Err(error) => Value::ResultValue(Err(Box::new(Value::String(format!(
+                        "无法写入文件「{path}」：{error}"
+                    ))))),
+                };
+                Ok(result)
+            }
+            Some(BuiltinFunction::NewDictionary) => Ok(Value::Dictionary(Rc::new(RefCell::new(
+                DictionaryValue::new(),
+            )))),
+            None => Err(self.error(format!("未知的内置函数「{name}」"))),
+        }
+    }
+
+    fn builtin_receiver_error(&self, name: &str, receiver: &Value) -> RuntimeError {
+        self.error(format!(
+            "内置方法「{name}」的接收者类型不匹配，实际为「{}」",
+            receiver.type_name()
+        ))
+    }
+
+    fn string_argument(
+        &self,
+        name: &str,
+        arguments: &[Value],
+        index: usize,
+    ) -> Result<String, RuntimeError> {
+        match arguments.get(index) {
+            Some(Value::String(value)) => Ok(value.clone()),
+            Some(other) => Err(self.error(format!(
+                "内置调用「{name}」的第 {} 个实参期望字符串，实际为「{}」",
+                index + 1,
+                other.type_name()
+            ))),
+            None => Err(self.error(format!("内置调用「{name}」缺少第 {} 个实参", index + 1))),
+        }
+    }
+
+    fn integer_argument(
+        &self,
+        name: &str,
+        arguments: &[Value],
+        index: usize,
+    ) -> Result<i64, RuntimeError> {
+        match arguments.get(index) {
+            Some(Value::Integer(value)) => Ok(*value),
+            Some(other) => Err(self.error(format!(
+                "内置调用「{name}」的第 {} 个实参期望整数，实际为「{}」",
+                index + 1,
+                other.type_name()
+            ))),
+            None => Err(self.error(format!("内置调用「{name}」缺少第 {} 个实参", index + 1))),
+        }
+    }
+
+    fn dictionary_key(&self, value: &Value) -> Result<DictionaryKey, RuntimeError> {
+        DictionaryKey::from_value(value).ok_or_else(|| {
+            self.error(format!(
+                "字典键必须是字符串、整数、小数或布尔，实际为「{}」",
+                value.type_name()
+            ))
+        })
+    }
+
     fn read_input(&mut self) -> Result<Value, RuntimeError> {
         if !self.use_stdio {
             return match self.input.pop_front() {
@@ -920,6 +1355,24 @@ fn value_from_constant(constant: &Constant) -> Value {
         Constant::Bool(value) => Value::Bool(*value),
         Constant::String(value) => Value::String(value.clone()),
         Constant::Null => Value::Null,
+    }
+}
+
+/// 严格解析十进制整数，并为失败结果生成中文说明。
+fn parse_integer_text(text: &str) -> Result<i64, String> {
+    match text.parse::<i64>() {
+        Ok(value) => Ok(value),
+        Err(_) => {
+            let digits = text
+                .strip_prefix('+')
+                .or_else(|| text.strip_prefix('-'))
+                .unwrap_or(text);
+            if !digits.is_empty() && digits.chars().all(|ch| ch.is_ascii_digit()) {
+                Err(format!("整数超出 64 位范围：「{text}」"))
+            } else {
+                Err(format!("不是有效的整数：「{text}」"))
+            }
+        }
     }
 }
 

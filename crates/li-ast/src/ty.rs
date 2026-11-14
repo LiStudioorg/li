@@ -33,6 +33,15 @@ pub enum TypeKind {
     String,
     /// 列表类型，例如 `列表<整数>`。
     List(Box<Type>),
+    /// 字典类型，例如 `字典<字符串, 整数>`。
+    Dictionary {
+        /// 键类型。
+        key: Box<Type>,
+        /// 值类型。
+        value: Box<Type>,
+    },
+    /// 原生指针类型，例如 `原生指针<整数>`。
+    RawPointer(Box<Type>),
     /// 可选类型，例如 `可选<字符串>`。
     Optional(Box<Type>),
     /// 结果类型，例如 `结果<整数, 字符串>`。

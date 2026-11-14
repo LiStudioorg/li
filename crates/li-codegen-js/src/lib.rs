@@ -16,10 +16,277 @@ use li_ir::{
 use escape::{float_literal, string_literal};
 use names::{is_js_identifier, NameMangler};
 
+/// 生成的 JavaScript 运行时辅助函数。
+///
+/// 这些函数统一实现内置方法、文件 I/O 与显示格式，确保与 VM 后端的
+/// 可见行为一致。字典使用 `Map`，保持插入顺序。
+const RUNTIME: &str = r#"
+let __li_fs = null;
+try {
+    if (typeof require === "function") {
+        __li_fs = require("fs");
+    }
+} catch (_) {
+    __li_fs = null;
+}
+
+function __li_成功(值) {
+    return { __li_成功: true, __li_值: 值 };
+}
+
+function __li_失败(错误) {
+    return { __li_成功: false, __li_错误: 错误 };
+}
+
+function __li_可选(值) {
+    if (值 === null || 值 === undefined) {
+        return { __li_成功: false };
+    }
+    return { __li_成功: true, __li_值: 值 };
+}
+
+function __li_显示(值) {
+    if (值 === null || 值 === undefined) {
+        return "空";
+    }
+    switch (typeof 值) {
+        case "boolean":
+            return 值 ? "真" : "假";
+        case "number":
+            return String(值);
+        case "string":
+            return 值;
+        case "bigint":
+            return String(值);
+        default:
+            break;
+    }
+    if (Array.isArray(值)) {
+        return "[" + 值.map(__li_显示).join(", ") + "]";
+    }
+    if (值 instanceof Map) {
+        const 项 = Array.from(值.entries())
+            .map(([键, 内容]) => __li_显示(键) + ": " + __li_显示(内容))
+            .join(", ");
+        return "{" + 项 + "}";
+    }
+    if (typeof 值 === "object") {
+        if (Object.prototype.hasOwnProperty.call(值, "__li_成功")) {
+            if (值.__li_成功) {
+                return "成功(" + __li_显示(值.__li_值) + ")";
+            }
+            return Object.prototype.hasOwnProperty.call(值, "__li_错误")
+                ? "失败(" + __li_显示(值.__li_错误) + ")"
+                : "空";
+        }
+        const 字段 = Object.keys(值)
+            .filter((键) => !键.startsWith("__li_"))
+            .sort()
+            .map((键) => 键 + ": " + __li_显示(值[键]))
+            .join(", ");
+        return 值.__li_类型
+            ? 值.__li_类型 + " { " + 字段 + " }"
+            : "{ " + 字段 + " }";
+    }
+    return String(值);
+}
+
+function __li_期望字符串(值, 名称) {
+    if (typeof 值 !== "string") {
+        throw new Error("内置调用「" + 名称 + "」期望字符串，实际为「" + __li_显示(值) + "」");
+    }
+    return 值;
+}
+
+function __li_期望整数(值, 名称) {
+    if (typeof 值 !== "number" || !Number.isInteger(值)) {
+        throw new Error("内置调用「" + 名称 + "」期望整数，实际为「" + __li_显示(值) + "」");
+    }
+    return 值;
+}
+
+function __li_期望列表(值, 名称) {
+    if (!Array.isArray(值)) {
+        throw new Error("内置调用「" + 名称 + "」期望列表，实际为「" + __li_显示(值) + "」");
+    }
+    return 值;
+}
+
+function __li_期望字典(值, 名称) {
+    if (!(值 instanceof Map)) {
+        throw new Error("内置调用「" + 名称 + "」期望字典，实际为「" + __li_显示(值) + "」");
+    }
+    return 值;
+}
+
+function __li_字典键(值) {
+    const 类型 = typeof 值;
+    if (类型 === "string" || 类型 === "boolean" ||
+        (类型 === "number" && !Number.isNaN(值))) {
+        return 值;
+    }
+    throw new Error("字典键必须是字符串、整数、小数或布尔，实际为「" + __li_显示(值) + "」");
+}
+
+function __li_解析整数(文本) {
+    if (!/^[+-]?\d+$/.test(文本)) {
+        return __li_失败("不是有效的整数：「" + 文本 + "」");
+    }
+    try {
+        const 值 = BigInt(文本);
+        if (值 < -9223372036854775808n || 值 > 9223372036854775807n) {
+            return __li_失败("整数超出 64 位范围：「" + 文本 + "」");
+        }
+        return __li_成功(Number(值));
+    } catch (_) {
+        return __li_失败("整数超出 64 位范围：「" + 文本 + "」");
+    }
+}
+
+function __li_调用内置(名称, 参数) {
+    const 接收者 = 参数[0];
+    switch (名称) {
+        case "字符串.长度":
+            return Array.from(__li_期望字符串(接收者, 名称)).length;
+        case "字符串.拼接":
+            return __li_期望字符串(接收者, 名称) + __li_期望字符串(参数[1], 名称);
+        case "字符串.转整数":
+            return __li_解析整数(__li_期望字符串(接收者, 名称));
+        case "字符串.包含":
+            return __li_期望字符串(接收者, 名称).includes(__li_期望字符串(参数[1], 名称));
+        case "字符串.字符": {
+            const 字符 = Array.from(__li_期望字符串(接收者, 名称));
+            const 下标 = __li_期望整数(参数[1], 名称);
+            return 下标 >= 0 && 下标 < 字符.length
+                ? __li_可选(字符[下标])
+                : { __li_成功: false };
+        }
+        case "字符串.切片": {
+            const 字符 = Array.from(__li_期望字符串(接收者, 名称));
+            const 起始 = Math.max(0, Math.min(__li_期望整数(参数[1], 名称), 字符.length));
+            const 结束 = Math.max(0, Math.min(__li_期望整数(参数[2], 名称), 字符.length));
+            return 起始 < 结束 ? 字符.slice(起始, 结束).join("") : "";
+        }
+        case "字符串.查找": {
+            const 文本 = __li_期望字符串(接收者, 名称);
+            const 字节 = 文本.indexOf(__li_期望字符串(参数[1], 名称));
+            return 字节 < 0
+                ? { __li_成功: false }
+                : __li_可选(Array.from(文本.slice(0, 字节)).length);
+        }
+        case "字符串.替换":
+            return __li_期望字符串(接收者, 名称).split(__li_期望字符串(参数[1], 名称))
+                .join(__li_期望字符串(参数[2], 名称));
+        case "字符串.分割": {
+            const 文本 = __li_期望字符串(接收者, 名称);
+            const 分隔符 = __li_期望字符串(参数[1], 名称);
+            return 分隔符 === "" ? Array.from(文本) : 文本.split(分隔符);
+        }
+        case "列表.长度":
+            return __li_期望列表(接收者, 名称).length;
+        case "列表.添加":
+            __li_期望列表(接收者, 名称).push(参数[1]);
+            return 接收者;
+        case "列表.获取": {
+            const 列表 = __li_期望列表(接收者, 名称);
+            const 下标 = __li_期望整数(参数[1], 名称);
+            return 下标 >= 0 && 下标 < 列表.length
+                ? __li_可选(列表[下标])
+                : { __li_成功: false };
+        }
+        case "列表.删除": {
+            const 列表 = __li_期望列表(接收者, 名称);
+            const 下标 = __li_期望整数(参数[1], 名称);
+            if (下标 < 0 || 下标 >= 列表.length) {
+                return false;
+            }
+            列表.splice(下标, 1);
+            return true;
+        }
+        case "字典.长度":
+            return __li_期望字典(接收者, 名称).size;
+        case "字典.插入": {
+            const 字典 = __li_期望字典(接收者, 名称);
+            字典.set(__li_字典键(参数[1]), 参数[2]);
+            return 接收者;
+        }
+        case "字典.获取": {
+            const 字典 = __li_期望字典(接收者, 名称);
+            const 键 = __li_字典键(参数[1]);
+            return 字典.has(键) ? __li_可选(字典.get(键)) : { __li_成功: false };
+        }
+        case "字典.删除": {
+            const 字典 = __li_期望字典(接收者, 名称);
+            return 字典.delete(__li_字典键(参数[1]));
+        }
+        case "字典.包含键": {
+            const 字典 = __li_期望字典(接收者, 名称);
+            return 字典.has(__li_字典键(参数[1]));
+        }
+        case "读取文本": {
+            const 路径 = __li_期望字符串(参数[0], 名称);
+            if (__li_fs === null) {
+                return __li_失败("当前 JavaScript 环境不支持文件读写");
+            }
+            try {
+                return __li_成功(__li_fs.readFileSync(路径, "utf8"));
+            } catch (错误) {
+                return __li_失败("无法读取文件「" + 路径 + "」：" + 错误.message);
+            }
+        }
+        case "写入文本": {
+            const 路径 = __li_期望字符串(参数[0], 名称);
+            const 内容 = __li_期望字符串(参数[1], 名称);
+            if (__li_fs === null) {
+                return __li_失败("当前 JavaScript 环境不支持文件读写");
+            }
+            try {
+                __li_fs.writeFileSync(路径, 内容, "utf8");
+                const 字节数 = typeof Buffer === "function"
+                    ? Buffer.byteLength(内容, "utf8")
+                    : 内容.length;
+                return __li_成功(字节数);
+            } catch (错误) {
+                return __li_失败("无法写入文件「" + 路径 + "」：" + 错误.message);
+            }
+        }
+        case "新建字典":
+            return new Map();
+        default:
+            throw new Error("未知的内置方法或函数「" + 名称 + "」");
+    }
+}
+"#;
+
 /// 把中立 IR 生成为 JavaScript 源码。
-pub fn generate(program: &Program) -> String {
+///
+/// JavaScript 目标不支持裸指针与手动内存操作；遇到 `不安全` 块或
+/// `原生指针<T>` 时直接返回中文错误，由调用方报告。
+pub fn generate(program: &Program) -> Result<String, String> {
+    if program.uses_unsafe || program_uses_raw_pointer(program) {
+        return Err(
+            "当前目标平台不支持底层内存操作：JavaScript 后端不支持「不安全」块或「原生指针<T>」"
+                .to_owned(),
+        );
+    }
+
     let mut generator = Generator::new(program);
-    generator.generate()
+    Ok(generator.generate())
+}
+
+/// 检查程序签名或局部变量中是否出现原生指针。
+fn program_uses_raw_pointer(program: &Program) -> bool {
+    program.functions.iter().any(|function| {
+        function.return_type.contains_raw_pointer()
+            || function
+                .params
+                .iter()
+                .any(|param| param.ty.contains_raw_pointer())
+            || function
+                .locals
+                .iter()
+                .any(|local| local.ty.contains_raw_pointer())
+    })
 }
 
 struct Generator<'a> {
@@ -46,6 +313,7 @@ impl<'a> Generator<'a> {
         let mut writer = Writer::new();
         writer.line("// 本文件由 li 编译器自动生成，请勿手动编辑。");
         writer.line("\"use strict\";");
+        writer.line(RUNTIME.trim_end());
 
         for function in &self.program.functions {
             writer.line("");
@@ -218,6 +486,43 @@ impl<'a> Generator<'a> {
                     None => writer.line(format!("{call};")),
                 }
             }
+            Instruction::BuiltinCall {
+                dest,
+                receiver,
+                method,
+                args,
+                ..
+            } => {
+                let mut operands = Vec::with_capacity(args.len() + 1);
+                operands.push(self.operand_js_name(receiver, local_names));
+                for argument in args {
+                    operands.push(self.operand_js_name(argument, local_names));
+                }
+                writer.line(format!(
+                    "{} = __li_调用内置({}, [{}]);",
+                    self.place_js_name(dest, local_names),
+                    string_literal(method.qualified_name()),
+                    operands.join(", ")
+                ));
+            }
+            Instruction::BuiltinFunctionCall {
+                dest,
+                function,
+                args,
+                ..
+            } => {
+                let operands = args
+                    .iter()
+                    .map(|argument| self.operand_js_name(argument, local_names))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                writer.line(format!(
+                    "{} = __li_调用内置({}, [{}]);",
+                    self.place_js_name(dest, local_names),
+                    string_literal(function.name()),
+                    operands
+                ));
+            }
             Instruction::Input { dest, .. } => {
                 writer.line(format!(
                     "{} = typeof prompt === \"function\" ? (prompt(\"请输入：\") ?? \"\") : \"\";",
@@ -323,7 +628,7 @@ impl<'a> Generator<'a> {
             }
             Instruction::Print { value } => {
                 writer.line(format!(
-                    "console.log({});",
+                    "console.log(__li_显示({}));",
                     self.operand_js_name(value, local_names)
                 ));
             }

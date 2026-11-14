@@ -17,6 +17,7 @@ dependencies = [
  "li-codegen-bytecode",
  "li-codegen-html",
  "li-codegen-js",
+ "li-codegen-llvm",
  "li-ir",
  "li-parser",
  "li-sema",
@@ -46,6 +47,16 @@ dependencies = [
 name = "li-codegen-js"
 version = "0.1.0"
 dependencies = [
+ "li-ir",
+ "li-parser",
+ "li-sema",
+]
+
+[[package]]
+name = "li-codegen-llvm"
+version = "0.1.0"
+dependencies = [
+ "li-errors",
  "li-ir",
  "li-parser",
  "li-sema",

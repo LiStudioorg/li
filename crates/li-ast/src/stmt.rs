@@ -37,6 +37,8 @@ pub enum Stmt {
     Continue(ContinueStmt),
     /// 模式匹配语句。
     Match(MatchStmt),
+    /// 不安全块，用于隔离底层内存操作。
+    Unsafe(UnsafeStmt),
     /// 打印语句。
     Print(PrintStmt),
 }
@@ -54,6 +56,7 @@ impl Stmt {
             Self::Break(stmt) => stmt.span,
             Self::Continue(stmt) => stmt.span,
             Self::Match(stmt) => stmt.span,
+            Self::Unsafe(stmt) => stmt.span,
             Self::Print(stmt) => stmt.span,
         }
     }
@@ -160,6 +163,18 @@ pub struct MatchArm {
     /// 模式命中后执行的语句块。
     pub body: Block,
     /// 整个分支的源码区间。
+    pub span: Span,
+}
+
+/// 不安全块，例如 `不安全 { 指针 = 分配(8); }`。
+///
+/// 底层指针解引用、手动内存分配与释放等操作必须位于该块内；
+/// 离开块后立即恢复严格的安全检查。
+#[derive(Clone, Debug, PartialEq)]
+pub struct UnsafeStmt {
+    /// 块内语句。
+    pub body: Block,
+    /// 整个不安全块在源码中的区间。
     pub span: Span,
 }
 

@@ -635,3 +635,91 @@ fn analyzes_functions_inside_modules() {
 
     assert_ok(source);
 }
+
+#[test]
+fn accepts_standard_library_methods_and_dictionaries() {
+    let source = "\
+函数 主() -> 整数 {
+    让 可变 数字们: 列表<整数> = [1, 2];
+    数字们 = 数字们.添加(3);
+    打印(数字们.长度());
+
+    让 文本: 字符串 = 「甲,乙,丙」;
+    打印(文本.长度());
+    打印(文本.拼接(「！」));
+    打印(文本.包含(「乙」));
+    打印(文本.切片(0, 1));
+    打印(文本.替换(「乙」, 「丁」));
+    让 部分: 列表<字符串> = 文本.分割(「,」);
+    匹配 部分.获取(0) {
+        成功(首项) => { 打印(首项); },
+        失败 => { 打印(「空」); },
+    }
+
+    让 可变 电话簿: 字典<字符串, 字符串> = 新建字典();
+    电话簿 = 电话簿.插入(「小明」, 「123」);
+    打印(电话簿.长度());
+    打印(电话簿.包含键(「小明」));
+    匹配 电话簿.获取(「小明」) {
+        成功(号码) => { 打印(号码); },
+        失败 => { 打印(「未找到」); },
+    }
+    返回 0;
+}";
+
+    assert_ok(source);
+}
+
+#[test]
+fn reports_non_hashable_dictionary_keys() {
+    let source = "\
+函数 主() -> 整数 {
+    让 字典值: 字典<列表<整数>, 字符串> = 新建字典();
+    返回 0;
+}";
+
+    assert_contains(
+        source,
+        &["不可哈希", "字典键类型", "字符串、整数、小数 或 布尔"],
+    );
+}
+
+#[test]
+fn accepts_unsafe_blocks_and_raw_pointer_types() {
+    let source = include_str!("../../li-parser/tests/fixtures/unsafe_raw_pointer.li");
+    assert_ok(source);
+}
+
+#[test]
+fn rejects_raw_pointer_annotations_outside_unsafe() {
+    let source = "\
+函数 空指针() -> 原生指针<整数> {
+    不安全 {
+        返回 空;
+    }
+}
+
+函数 主() -> 整数 {
+    让 指针: 原生指针<整数> = 空指针();
+    返回 0;
+}";
+
+    assert_contains(
+        source,
+        &[
+            "只能出现在「不安全」块或函数签名中",
+            "调用结果必须在「不安全」块中使用",
+        ],
+    );
+}
+
+#[test]
+fn rejects_raw_pointer_values_outside_unsafe() {
+    let source = "\
+函数 主(指针: 原生指针<整数>) -> 整数 {
+    打印(指针);
+    返回 0;
+}";
+
+    assert_contains(source, &["原生指针「指针」只能在「不安全」块中使用"]);
+}

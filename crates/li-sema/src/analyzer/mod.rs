@@ -42,6 +42,8 @@ struct Analyzer {
     current_return: Option<Ty>,
     /// 当前循环嵌套深度，用于检查 `跳出` / `继续`。
     loop_depth: usize,
+    /// 当前 `不安全` 块嵌套深度。
+    unsafe_depth: usize,
 }
 
 impl Analyzer {
@@ -53,6 +55,7 @@ impl Analyzer {
             diagnostics: DiagnosticBag::new(),
             current_return: None,
             loop_depth: 0,
+            unsafe_depth: 0,
         }
     }
 
@@ -145,7 +148,24 @@ impl Analyzer {
             TypeKind::Bool => Ty::Bool,
             TypeKind::String => Ty::String,
             TypeKind::List(element) => Ty::List(Box::new(self.resolve_type(element))),
+            TypeKind::Dictionary { key, value } => {
+                let key_ty = self.resolve_type(key);
+                if !key_ty.is_hashable() {
+                    self.diagnostics.push(
+                        Diagnostic::error(format!("字典键类型「{key_ty}」不可哈希"))
+                            .with_span(key.span)
+                            .with_expected("字符串、整数、小数 或 布尔")
+                            .with_actual(key_ty.to_string())
+                            .with_note("第一版字典使用宿主哈希表，只支持标量键"),
+                    );
+                }
+                Ty::Dictionary {
+                    key: Box::new(key_ty),
+                    value: Box::new(self.resolve_type(value)),
+                }
+            }
             TypeKind::Optional(inner) => Ty::Optional(Box::new(self.resolve_type(inner))),
+            TypeKind::RawPointer(inner) => Ty::RawPointer(Box::new(self.resolve_type(inner))),
             TypeKind::Result { value, error } => Ty::Result {
                 ok: Box::new(self.resolve_type(value)),
                 error: Box::new(self.resolve_type(error)),
@@ -252,7 +272,21 @@ impl Analyzer {
                 Ty::List(actual_element) => Self::is_compatible(expected_element, actual_element),
                 _ => false,
             },
+            Ty::Dictionary {
+                key: expected_key,
+                value: expected_value,
+            } => match actual {
+                Ty::Dictionary {
+                    key: actual_key,
+                    value: actual_value,
+                } => {
+                    Self::is_compatible(expected_key, actual_key)
+                        && Self::is_compatible(expected_value, actual_value)
+                }
+                _ => false,
+            },
             Ty::Result { ok, .. } => Self::is_compatible(ok, actual),
+            Ty::RawPointer(_) => matches!(actual, Ty::Null),
             _ => false,
         }
     }

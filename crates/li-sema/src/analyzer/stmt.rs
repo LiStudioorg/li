@@ -2,7 +2,7 @@
 
 use li_ast::{
     AssignStmt, Expr, ExprKind, Ident, IfStmt, LetStmt, Literal, MatchStmt, Pattern, PatternKind,
-    PrintStmt, ReturnStmt, Stmt, WhileStmt,
+    PrintStmt, ReturnStmt, Stmt, UnsafeStmt, WhileStmt,
 };
 use li_errors::{Diagnostic, Span};
 
@@ -44,6 +44,7 @@ impl Analyzer {
                 }
             }
             Stmt::Match(stmt) => self.analyze_match(stmt),
+            Stmt::Unsafe(stmt) => self.analyze_unsafe(stmt),
             Stmt::Print(stmt) => self.analyze_print(stmt),
         }
     }
@@ -53,6 +54,16 @@ impl Analyzer {
 
         let ty = if let Some(annotation) = &stmt.ty {
             let expected = self.resolve_type(annotation);
+            if expected.is_raw_pointer() && self.unsafe_depth == 0 {
+                self.diagnostics.push(
+                    Diagnostic::error(format!(
+                        "原生指针类型「{expected}」只能出现在「不安全」块或函数签名中"
+                    ))
+                    .with_span(annotation.span)
+                    .with_expected("包裹在「不安全 { ... }」块内")
+                    .with_actual("安全代码中的局部变量标注"),
+                );
+            }
             self.check_compatible(
                 stmt.initializer.span,
                 &expected,
@@ -64,6 +75,15 @@ impl Analyzer {
             self.report(
                 stmt.initializer.span,
                 "无法推导「空」的类型，请添加类型标注",
+            );
+            Ty::Error
+        } else if matches!(
+            &initializer_ty,
+            Ty::Dictionary { key, value } if key.is_error() || value.is_error()
+        ) {
+            self.report(
+                stmt.initializer.span,
+                "无法推导字典的键值类型，请添加类型标注",
             );
             Ty::Error
         } else {
@@ -205,6 +225,13 @@ impl Analyzer {
         self.loop_depth += 1;
         self.analyze_block(&stmt.body);
         self.loop_depth -= 1;
+    }
+
+    /// 检查不安全块：块内允许使用原生指针，离开后立即恢复安全检查。
+    fn analyze_unsafe(&mut self, stmt: &UnsafeStmt) {
+        self.unsafe_depth += 1;
+        self.analyze_block(&stmt.body);
+        self.unsafe_depth -= 1;
     }
 
     /// 条件表达式必须是 `布尔`；可选值或结果值先去重处理。

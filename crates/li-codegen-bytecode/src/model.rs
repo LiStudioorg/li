@@ -8,6 +8,7 @@ use std::collections::HashSet;
 use std::fmt;
 
 use li_errors::Span;
+use li_ir::{BuiltinFunction, BuiltinMethod};
 
 /// 当前 `.lic` 文件格式的版本号。
 pub const BYTECODE_VERSION: u32 = 1;
@@ -51,6 +52,8 @@ pub enum Opcode {
     JumpIfFalse,
     /// 调用函数，后面紧跟实参个数。
     Call,
+    /// 调用字符串或列表的内置方法，后面紧跟方法名与实参个数。
+    InvokeBuiltin,
     /// 弹出返回值并结束当前函数。
     Return,
     /// 不返回值并结束当前函数。
@@ -107,6 +110,7 @@ impl Opcode {
             Self::Jump => "JUMP",
             Self::JumpIfFalse => "JUMP_IF_FALSE",
             Self::Call => "CALL",
+            Self::InvokeBuiltin => "INVOKE_BUILTIN",
             Self::Return => "RETURN",
             Self::ReturnVoid => "RETURN_VOID",
             Self::Halt => "HALT",
@@ -147,6 +151,7 @@ impl Opcode {
             "JUMP" => Self::Jump,
             "JUMP_IF_FALSE" => Self::JumpIfFalse,
             "CALL" => Self::Call,
+            "INVOKE_BUILTIN" => Self::InvokeBuiltin,
             "RETURN" => Self::Return,
             "RETURN_VOID" => Self::ReturnVoid,
             "HALT" => Self::Halt,
@@ -236,7 +241,7 @@ impl Instruction {
             | Opcode::JumpIfFalse
             | Opcode::MakeList
             | Opcode::WrapOptional => 1,
-            Opcode::Call => 2,
+            Opcode::Call | Opcode::InvokeBuiltin => 2,
             Opcode::GetField | Opcode::SetField => 1,
             _ => 0,
         };
@@ -268,6 +273,30 @@ impl Instruction {
                 }
                 if self.integer_arg(1).is_none() {
                     return Err("指令「CALL」的第二个参数必须是实参个数".to_owned());
+                }
+            }
+            Opcode::InvokeBuiltin => {
+                let name = self.name_arg(0).unwrap_or("");
+                let Some(argc) = self.integer_arg(1) else {
+                    return Err("指令「INVOKE_BUILTIN」的第二个参数必须是实参个数".to_owned());
+                };
+
+                if let Some(method) = BuiltinMethod::from_qualified_name(name) {
+                    if argc != method.arity() {
+                        return Err(format!(
+                            "内置方法「{name}」需要 {} 个实参，实际为 {argc} 个",
+                            method.arity()
+                        ));
+                    }
+                } else if let Some(function) = BuiltinFunction::from_name(name) {
+                    if argc != function.arity() {
+                        return Err(format!(
+                            "内置函数「{name}」需要 {} 个实参，实际为 {argc} 个",
+                            function.arity()
+                        ));
+                    }
+                } else {
+                    return Err(format!("未知的内置方法或函数「{name}」"));
                 }
             }
             Opcode::GetField | Opcode::SetField => {

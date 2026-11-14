@@ -14,7 +14,7 @@ fn compile(source: &str) -> String {
         li_parser::parse_source(source).unwrap_or_else(|errors| panic!("语法分析失败：\n{errors}"));
     li_sema::check(&program).unwrap_or_else(|errors| panic!("语义分析失败：\n{errors}"));
     let ir = li_ir::lower(&program).unwrap_or_else(|errors| panic!("IR 降级失败：\n{errors}"));
-    li_codegen_js::generate(&ir)
+    li_codegen_js::generate(&ir).unwrap_or_else(|message| panic!("JavaScript 生成失败：{message}"))
 }
 
 /// 用 Node.js 执行 JavaScript，返回标准输出；没有 Node.js 时返回 `None`。
@@ -60,7 +60,7 @@ fn generates_runnable_fibonacci() {
         "缺少主函数：\n{javascript}"
     );
     assert!(
-        javascript.contains("console.log(值);"),
+        javascript.contains("console.log(__li_显示(值));"),
         "打印应映射为 console.log：\n{javascript}"
     );
     assert!(
@@ -122,8 +122,14 @@ fn generates_optional_and_result_matching() {
 
     assert!(javascript.contains("__li_成功"), "缺少可选值包装");
     assert!(javascript.contains("__li_值"), "缺少结果值包装");
-    assert!(javascript.contains("console.log(99);"), "缺少失败分支");
-    assert!(javascript.contains("console.log(值);"), "缺少成功分支");
+    assert!(
+        javascript.contains("console.log(__li_显示(99));"),
+        "缺少失败分支"
+    );
+    assert!(
+        javascript.contains("console.log(__li_显示(值));"),
+        "缺少成功分支"
+    );
 
     if let Some(output) = run_node(&javascript) {
         assert_eq!(output, "99\n7\n");
@@ -140,7 +146,7 @@ fn escapes_string_literals() {
     let javascript = compile(source);
 
     assert!(
-        javascript.contains("console.log(\"你好，li\");"),
+        javascript.contains("console.log(__li_显示(\"你好，li\"));"),
         "字符串未正确生成：\n{javascript}"
     );
 }
@@ -160,11 +166,75 @@ fn avoids_shadowing_runtime_globals() {
         "局部变量应避开 console：\n{javascript}"
     );
     assert!(
-        javascript.contains("console.log(_li_console);"),
+        javascript.contains("console.log(__li_显示(_li_console));"),
         "打印必须仍然调用全局 console：\n{javascript}"
     );
 
     if let Some(output) = run_node(&javascript) {
         assert_eq!(output, "1\n");
     }
+}
+
+#[test]
+fn executes_standard_library_methods_in_node() {
+    let source = "\
+函数 主() -> 整数 {
+    让 可变 数字们: 列表<整数> = [1, 2];
+    数字们 = 数字们.添加(3);
+    打印(数字们.长度());
+    打印(数字们);
+
+    让 文本: 字符串 = 「你好，li」;
+    打印(文本.长度());
+    打印(文本.切片(0, 2));
+    打印(文本.替换(「li」, 「世界」));
+    打印(「甲,乙,丙」.分割(「,」));
+    返回 0;
+}";
+    let javascript = compile(source);
+
+    if let Some(output) = run_node(&javascript) {
+        assert_eq!(output, "3\n[1, 2, 3]\n5\n你好\n你好，世界\n[甲, 乙, 丙]\n");
+    }
+}
+
+#[test]
+fn executes_dictionary_methods_in_node() {
+    let source = "\
+函数 主() -> 整数 {
+    让 可变 电话簿: 字典<字符串, 字符串> = 新建字典();
+    电话簿 = 电话簿.插入(「小明」, 「123」);
+    电话簿 = 电话簿.插入(「小红」, 「456」);
+    打印(电话簿.长度());
+    匹配 电话簿.获取(「小明」) {
+        成功(号码) => { 打印(号码); },
+        失败 => { 打印(「未找到」); },
+    }
+    打印(电话簿.包含键(「小红」));
+    打印(电话簿.删除(「小红」));
+    打印(电话簿.长度());
+    返回 0;
+}";
+    let javascript = compile(source);
+
+    if let Some(output) = run_node(&javascript) {
+        assert_eq!(output, "2\n123\n真\n真\n1\n");
+    }
+}
+
+#[test]
+fn rejects_unsafe_blocks_for_javascript_target() {
+    let program = li_parser::parse_source(include_str!(
+        "../../li-parser/tests/fixtures/unsafe_raw_pointer.li"
+    ))
+    .expect("语法分析失败");
+    li_sema::check(&program).expect("语义分析失败");
+    let ir = li_ir::lower(&program).expect("IR 降级失败");
+
+    let message =
+        li_codegen_js::generate(&ir).expect_err("JavaScript 后端必须拒绝不安全块与原生指针");
+    assert!(
+        message.contains("当前目标平台不支持底层内存操作"),
+        "错误信息不符合预期：{message}"
+    );
 }

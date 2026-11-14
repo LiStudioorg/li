@@ -13,7 +13,8 @@ pub mod ir;
 mod lower;
 
 pub use ir::{
-    BasicBlock, BinaryOp, Constant, Function, Instruction, IrType, Label, Local, Operand,
-    Parameter, Place, Program, StructDecl, StructField, TempId, Terminator, UnaryOp,
+    BasicBlock, BinaryOp, BuiltinFunction, BuiltinMethod, Constant, Function, Instruction, IrType,
+    Label, Local, Operand, Parameter, Place, Program, StructDecl, StructField, TempId, Terminator,
+    UnaryOp,
 };
 pub use lower::lower;

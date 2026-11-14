@@ -26,7 +26,7 @@ pub use item::{
 pub use pattern::{Pattern, PatternKind};
 pub use stmt::{
     AssignStmt, Block, BreakStmt, ContinueStmt, ExprStmt, IfStmt, LetStmt, MatchArm, MatchStmt,
-    PrintStmt, ReturnStmt, Stmt, WhileStmt,
+    PrintStmt, ReturnStmt, Stmt, UnsafeStmt, WhileStmt,
 };
 pub use ty::{Type, TypeKind};
 pub use view::{ViewAttribute, ViewContent, ViewDecl, ViewNode, ViewValue, ViewValueKind};

@@ -2,7 +2,7 @@
 
 use li_ast::{
     AssignStmt, Block, BreakStmt, ContinueStmt, ExprStmt, Ident, IfStmt, LetStmt, Literal,
-    MatchArm, MatchStmt, Pattern, PatternKind, PrintStmt, ReturnStmt, Stmt, WhileStmt,
+    MatchArm, MatchStmt, Pattern, PatternKind, PrintStmt, ReturnStmt, Stmt, UnsafeStmt, WhileStmt,
 };
 use li_errors::Span;
 use li_lexer::TokenKind;
@@ -49,6 +49,7 @@ impl Parser {
             TokenKind::Continue => self.parse_continue_statement(),
             TokenKind::Return => self.parse_return_statement(),
             TokenKind::Match => self.parse_match_statement(),
+            TokenKind::Unsafe => self.parse_unsafe_statement(),
             TokenKind::Print => self.parse_print_statement(),
             _ => self.parse_expression_statement(),
         }
@@ -112,6 +113,15 @@ impl Parser {
             body,
             span: Span::new(while_token.span.start, body_end),
         }))
+    }
+
+    /// 解析 `不安全 { ... }` 块。
+    fn parse_unsafe_statement(&mut self) -> Option<Stmt> {
+        let unsafe_token = self.advance();
+        let body = self.parse_block()?;
+        let span = Span::new(unsafe_token.span.start, body.span.end);
+
+        Some(Stmt::Unsafe(UnsafeStmt { body, span }))
     }
 
     fn parse_break_statement(&mut self) -> Option<Stmt> {

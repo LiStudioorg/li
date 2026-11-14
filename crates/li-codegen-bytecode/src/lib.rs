@@ -12,6 +12,7 @@ mod codegen;
 mod model;
 mod text;
 
+pub use li_ir::{BuiltinFunction, BuiltinMethod};
 pub use model::{
     Constant, FunctionCode, Instruction, InstructionArg, Opcode, Program, BYTECODE_VERSION,
 };

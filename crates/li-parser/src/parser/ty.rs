@@ -37,6 +37,30 @@ impl Parser {
                 let span = Span::new(start, close.span.end);
                 Some(Type::new(TypeKind::List(Box::new(element)), span))
             }
+            TokenKind::DictionaryType => {
+                self.advance();
+                self.expect_kind(&TokenKind::Less, "`<`")?;
+                let key = self.parse_type()?;
+                self.expect_kind(&TokenKind::Comma, "`,`")?;
+                let value = self.parse_type()?;
+                let close = self.expect_kind(&TokenKind::Greater, "`>`")?;
+                let span = Span::new(start, close.span.end);
+                Some(Type::new(
+                    TypeKind::Dictionary {
+                        key: Box::new(key),
+                        value: Box::new(value),
+                    },
+                    span,
+                ))
+            }
+            TokenKind::RawPointerType => {
+                self.advance();
+                self.expect_kind(&TokenKind::Less, "`<`")?;
+                let inner = self.parse_type()?;
+                let close = self.expect_kind(&TokenKind::Greater, "`>`")?;
+                let span = Span::new(start, close.span.end);
+                Some(Type::new(TypeKind::RawPointer(Box::new(inner)), span))
+            }
             TokenKind::OptionalType => {
                 self.advance();
                 self.expect_kind(&TokenKind::Less, "`<`")?;

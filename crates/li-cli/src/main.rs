@@ -1,9 +1,10 @@
 //! li 编译器命令行入口。
 //!
-//! 提供四条主要命令：
+//! 提供五条主要命令：
 //! - `li 编译 <文件.li>`：编译为同名 `.lic` 字节码文件；
 //! - `li 执行 <文件.lic>`：在栈式虚拟机中加载并执行字节码；
 //! - `li 编译-js <文件.li>`：编译为同名 JavaScript 文件；
+//! - `li 编译-llvm <文件.li>`：生成同名文本 LLVM IR（`.ll`）；
 //! - `li 编译-html <文件.lui>`：把视图文件编译为同名 HTML 文件。
 //!
 //! 前端流程完全复用：语法分析 → 语义检查 → 中立 IR 降级 → 后端代码生成；
@@ -48,6 +49,14 @@ fn main() -> ExitCode {
             }
             compile_to_javascript(Path::new(&args[1]))
         }
+        "编译-llvm" => {
+            if args.len() != 2 {
+                eprintln!("错误：命令「编译-llvm」需要一个 .li 文件参数");
+                print_usage();
+                return ExitCode::FAILURE;
+            }
+            compile_to_llvm(Path::new(&args[1]))
+        }
         "编译-html" => {
             if args.len() != 2 {
                 eprintln!("错误：命令「编译-html」需要一个 .lui 文件参数");
@@ -78,6 +87,7 @@ fn print_usage() {
     println!("  li 编译 <文件.li>      将 li 源码编译为同名 .lic 字节码文件");
     println!("  li 执行 <文件.lic>     在虚拟机中加载并执行字节码");
     println!("  li 编译-js <文件.li>   将 li 源码编译为同名 .js 文件");
+    println!("  li 编译-llvm <文件.li> 生成同名文本 LLVM IR（.ll）");
     println!("  li 编译-html <文件.lui> 将 .lui 视图文件编译为同名 .html 文件");
     println!("  li 版本                显示版本信息");
     println!("  li 帮助                显示帮助信息");
@@ -138,7 +148,13 @@ fn compile_to_javascript(input: &Path) -> ExitCode {
         Err(code) => return code,
     };
 
-    let javascript = li_codegen_js::generate(&ir);
+    let javascript = match li_codegen_js::generate(&ir) {
+        Ok(javascript) => javascript,
+        Err(message) => {
+            eprintln!("错误：{message}");
+            return ExitCode::FAILURE;
+        }
+    };
     let output = input.with_extension("js");
 
     if let Err(error) = fs::write(&output, javascript) {
@@ -151,6 +167,38 @@ fn compile_to_javascript(input: &Path) -> ExitCode {
     }
 
     println!("已生成 JavaScript：{}", output.display());
+    ExitCode::SUCCESS
+}
+
+/// 把 li 源码生成为同名的文本 LLVM IR（`.ll`）。
+///
+/// 该命令只依赖编译器本身，不需要本机安装 LLVM；生成的 `.ll`
+/// 可以后续交给 `clang` 或 `llc` 生成原生可执行文件。
+fn compile_to_llvm(input: &Path) -> ExitCode {
+    let ir = match compile_to_ir(input) {
+        Ok(ir) => ir,
+        Err(code) => return code,
+    };
+
+    let llvm_ir = match li_codegen_llvm::generate(&ir) {
+        Ok(llvm_ir) => llvm_ir,
+        Err(errors) => {
+            eprintln!("{errors}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let output = input.with_extension("ll");
+
+    if let Err(error) = fs::write(&output, llvm_ir) {
+        eprintln!(
+            "错误：无法写入文件「{}」：{}",
+            output.display(),
+            io_error_text(&error)
+        );
+        return ExitCode::FAILURE;
+    }
+
+    println!("已生成 LLVM IR：{}", output.display());
     ExitCode::SUCCESS
 }
 

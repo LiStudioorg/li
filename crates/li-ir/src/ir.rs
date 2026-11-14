@@ -24,6 +24,15 @@ pub enum IrType {
     Null,
     /// 列表类型。
     List(Box<IrType>),
+    /// 字典类型。
+    Dictionary {
+        /// 键类型。
+        key: Box<IrType>,
+        /// 值类型。
+        value: Box<IrType>,
+    },
+    /// 原生指针类型。
+    RawPointer(Box<IrType>),
     /// 可选类型。
     Optional(Box<IrType>),
     /// 结果类型。
@@ -73,6 +82,20 @@ impl IrType {
             _ => None,
         }
     }
+
+    /// 是否包含原生指针类型。
+    pub fn contains_raw_pointer(&self) -> bool {
+        match self {
+            Self::RawPointer(_) => true,
+            Self::List(element) => element.contains_raw_pointer(),
+            Self::Dictionary { key, value } => {
+                key.contains_raw_pointer() || value.contains_raw_pointer()
+            }
+            Self::Optional(inner) => inner.contains_raw_pointer(),
+            Self::Result { ok, error } => ok.contains_raw_pointer() || error.contains_raw_pointer(),
+            _ => false,
+        }
+    }
 }
 
 impl fmt::Display for IrType {
@@ -84,6 +107,8 @@ impl fmt::Display for IrType {
             Self::String => f.write_str("字符串"),
             Self::Null => f.write_str("空"),
             Self::List(element) => write!(f, "列表<{element}>"),
+            Self::Dictionary { key, value } => write!(f, "字典<{key}, {value}>"),
+            Self::RawPointer(inner) => write!(f, "原生指针<{inner}>"),
             Self::Optional(inner) => write!(f, "可选<{inner}>"),
             Self::Result { ok, error } => write!(f, "结果<{ok}, {error}>"),
             Self::Struct(name) => f.write_str(name),
@@ -129,6 +154,178 @@ impl fmt::Display for Constant {
             Self::String(value) => write!(f, "「{value}」"),
             Self::Null => f.write_str("空"),
         }
+    }
+}
+
+/// 字符串与列表的内置方法。
+///
+/// 内置方法是语言标准库的一部分，而不是某个目标平台的细节；
+/// IR 只记录方法的稳定标识，由各后端映射为原生操作。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum BuiltinMethod {
+    /// 字符串长度，按 Unicode 字符计数。
+    StringLength,
+    /// 字符串拼接。
+    StringConcat,
+    /// 字符串转整数，失败时返回错误说明。
+    StringParseInteger,
+    /// 字符串是否包含子串。
+    StringContains,
+    /// 按 Unicode 字符下标取字符。
+    StringChar,
+    /// 按 Unicode 字符下标取切片。
+    StringSlice,
+    /// 查找子串，返回 Unicode 字符下标。
+    StringFind,
+    /// 替换全部子串。
+    StringReplace,
+    /// 按分隔符分割字符串。
+    StringSplit,
+    /// 列表长度。
+    ListLength,
+    /// 列表追加元素。
+    ListAdd,
+    /// 列表按下标获取元素，越界返回空。
+    ListGet,
+    /// 列表按下标删除元素。
+    ListRemove,
+    /// 字典长度。
+    DictionaryLength,
+    /// 字典插入键值对。
+    DictionaryInsert,
+    /// 字典按键获取值。
+    DictionaryGet,
+    /// 字典按键删除。
+    DictionaryRemove,
+    /// 字典是否包含键。
+    DictionaryContainsKey,
+}
+
+impl BuiltinMethod {
+    /// 返回 `.lic` 与诊断中使用的稳定名称。
+    pub const fn qualified_name(self) -> &'static str {
+        match self {
+            Self::StringLength => "字符串.长度",
+            Self::StringConcat => "字符串.拼接",
+            Self::StringParseInteger => "字符串.转整数",
+            Self::StringContains => "字符串.包含",
+            Self::StringChar => "字符串.字符",
+            Self::StringSlice => "字符串.切片",
+            Self::StringFind => "字符串.查找",
+            Self::StringReplace => "字符串.替换",
+            Self::StringSplit => "字符串.分割",
+            Self::ListLength => "列表.长度",
+            Self::ListAdd => "列表.添加",
+            Self::ListGet => "列表.获取",
+            Self::ListRemove => "列表.删除",
+            Self::DictionaryLength => "字典.长度",
+            Self::DictionaryInsert => "字典.插入",
+            Self::DictionaryGet => "字典.获取",
+            Self::DictionaryRemove => "字典.删除",
+            Self::DictionaryContainsKey => "字典.包含键",
+        }
+    }
+
+    /// 根据稳定名称解析内置方法。
+    pub fn from_qualified_name(name: &str) -> Option<Self> {
+        let method = match name {
+            "字符串.长度" => Self::StringLength,
+            "字符串.拼接" => Self::StringConcat,
+            "字符串.转整数" => Self::StringParseInteger,
+            "字符串.包含" => Self::StringContains,
+            "字符串.字符" => Self::StringChar,
+            "字符串.切片" => Self::StringSlice,
+            "字符串.查找" => Self::StringFind,
+            "字符串.替换" => Self::StringReplace,
+            "字符串.分割" => Self::StringSplit,
+            "列表.长度" => Self::ListLength,
+            "列表.添加" => Self::ListAdd,
+            "列表.获取" => Self::ListGet,
+            "列表.删除" => Self::ListRemove,
+            "字典.长度" => Self::DictionaryLength,
+            "字典.插入" => Self::DictionaryInsert,
+            "字典.获取" => Self::DictionaryGet,
+            "字典.删除" => Self::DictionaryRemove,
+            "字典.包含键" => Self::DictionaryContainsKey,
+            _ => return None,
+        };
+        Some(method)
+    }
+
+    /// 返回方法的实参个数，不包含接收者。
+    pub const fn arity(self) -> usize {
+        match self {
+            Self::StringLength
+            | Self::StringParseInteger
+            | Self::ListLength
+            | Self::DictionaryLength => 0,
+            Self::StringConcat
+            | Self::StringContains
+            | Self::StringChar
+            | Self::StringFind
+            | Self::StringSplit
+            | Self::ListAdd
+            | Self::ListGet
+            | Self::ListRemove
+            | Self::DictionaryGet
+            | Self::DictionaryRemove
+            | Self::DictionaryContainsKey => 1,
+            Self::StringSlice | Self::StringReplace | Self::DictionaryInsert => 2,
+        }
+    }
+}
+
+impl fmt::Display for BuiltinMethod {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.qualified_name())
+    }
+}
+
+/// 语言级内置函数，主要提供宿主能力。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum BuiltinFunction {
+    /// 读取整个文本文件。
+    ReadText,
+    /// 写入文本文件。
+    WriteText,
+    /// 创建一个空字典。
+    NewDictionary,
+}
+
+impl BuiltinFunction {
+    /// 返回 `.lic` 与诊断中使用的稳定名称。
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::ReadText => "读取文本",
+            Self::WriteText => "写入文本",
+            Self::NewDictionary => "新建字典",
+        }
+    }
+
+    /// 根据稳定名称解析内置函数。
+    pub fn from_name(name: &str) -> Option<Self> {
+        let function = match name {
+            "读取文本" => Self::ReadText,
+            "写入文本" => Self::WriteText,
+            "新建字典" => Self::NewDictionary,
+            _ => return None,
+        };
+        Some(function)
+    }
+
+    /// 返回实参个数。
+    pub const fn arity(self) -> usize {
+        match self {
+            Self::ReadText => 1,
+            Self::WriteText => 2,
+            Self::NewDictionary => 0,
+        }
+    }
+}
+
+impl fmt::Display for BuiltinFunction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
     }
 }
 
@@ -296,6 +493,30 @@ pub enum Instruction {
         /// 返回类型。
         ty: IrType,
     },
+    /// 调用字符串或列表的内置方法。
+    BuiltinCall {
+        /// 目标位置。
+        dest: Place,
+        /// 方法接收者。
+        receiver: Operand,
+        /// 内置方法标识。
+        method: BuiltinMethod,
+        /// 实参列表，不包含接收者。
+        args: Vec<Operand>,
+        /// 返回类型。
+        ty: IrType,
+    },
+    /// 调用语言级内置函数。
+    BuiltinFunctionCall {
+        /// 目标位置。
+        dest: Place,
+        /// 内置函数标识。
+        function: BuiltinFunction,
+        /// 实参列表。
+        args: Vec<Operand>,
+        /// 返回类型。
+        ty: IrType,
+    },
     /// 读取标准输入。
     Input {
         /// 目标位置。
@@ -438,6 +659,30 @@ impl Instruction {
                 if let Some(dest) = dest {
                     visitor(dest);
                 }
+                for argument in args {
+                    if let Operand::Place(place) = argument {
+                        visitor(place);
+                    }
+                }
+            }
+            Self::BuiltinCall {
+                dest,
+                receiver,
+                args,
+                ..
+            } => {
+                visitor(dest);
+                if let Operand::Place(place) = receiver {
+                    visitor(place);
+                }
+                for argument in args {
+                    if let Operand::Place(place) = argument {
+                        visitor(place);
+                    }
+                }
+            }
+            Self::BuiltinFunctionCall { dest, args, .. } => {
+                visitor(dest);
                 for argument in args {
                     if let Operand::Place(place) = argument {
                         visitor(place);
@@ -662,6 +907,10 @@ pub struct Program {
     pub structs: Vec<StructDecl>,
     /// 函数定义。
     pub functions: Vec<Function>,
+    /// 是否包含 `不安全` 块。
+    ///
+    /// 该标记让不支持底层内存操作的后端在代码生成前直接拒绝程序。
+    pub uses_unsafe: bool,
 }
 
 impl Program {
@@ -757,6 +1006,33 @@ fn format_instruction(instruction: &Instruction) -> String {
                 .map(ToString::to_string)
                 .unwrap_or_else(|| "_".to_owned());
             format!("{target} = 调用 {function}({arguments}) : {ty}")
+        }
+        Instruction::BuiltinCall {
+            dest,
+            receiver,
+            method,
+            args,
+            ty,
+        } => {
+            let arguments = std::iter::once(receiver)
+                .chain(args.iter())
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{dest} = 内置调用 {method}({arguments}) : {ty}")
+        }
+        Instruction::BuiltinFunctionCall {
+            dest,
+            function,
+            args,
+            ty,
+        } => {
+            let arguments = args
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{dest} = 内置函数 {function}({arguments}) : {ty}")
         }
         Instruction::Input { dest, ty } => format!("{dest} = 输入 : {ty}"),
         Instruction::MakeList { dest, elements, ty } => {

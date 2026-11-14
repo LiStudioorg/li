@@ -179,3 +179,65 @@ fn flattens_functions_declared_inside_modules() {
     assert_eq!(call.0, "加一");
     assert_eq!(call.1, &IrType::Integer);
 }
+
+#[test]
+fn lowers_builtin_methods_and_dictionary_types() {
+    let source = "\
+函数 主() -> 整数 {
+    让 可变 电话簿: 字典<字符串, 整数> = 新建字典();
+    电话簿 = 电话簿.插入(「甲」, 1);
+    匹配 电话簿.获取(「甲」) {
+        成功(值) => { 打印(值); },
+        失败 => { 打印(0); },
+    }
+    打印(「甲,乙」.分割(「,」).长度());
+    返回 0;
+}";
+    let program = lower_source(source);
+
+    let main = program.function("主").expect("缺少主函数");
+    assert!(main.locals.iter().any(|local| local.name == "电话簿"
+        && local.ty
+            == IrType::Dictionary {
+                key: Box::new(IrType::String),
+                value: Box::new(IrType::Integer),
+            }));
+
+    let methods = main
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| match instruction {
+            Instruction::BuiltinCall { method, .. } => Some(method.qualified_name()),
+            Instruction::BuiltinFunctionCall { function, .. } => Some(function.name()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert!(methods.contains(&"新建字典"));
+    assert!(methods.contains(&"字典.插入"));
+    assert!(methods.contains(&"字典.获取"));
+    assert!(methods.contains(&"字符串.分割"));
+    assert!(methods.contains(&"列表.长度"));
+}
+
+#[test]
+fn marks_programs_with_unsafe_blocks_and_raw_pointer_types() {
+    let program = lower_source(include_str!(
+        "../../li-parser/tests/fixtures/unsafe_raw_pointer.li"
+    ));
+
+    assert!(program.uses_unsafe, "IR 必须记录不安全块标记");
+
+    let null_pointer = program.function("空指针").expect("缺少空指针函数");
+    assert_eq!(
+        null_pointer.return_type,
+        IrType::RawPointer(Box::new(IrType::Integer))
+    );
+
+    let main = program.function("主").expect("缺少主函数");
+    assert!(main
+        .locals
+        .iter()
+        .any(|local| matches!(local.ty, IrType::RawPointer(_))));
+}

@@ -806,3 +806,51 @@ fn recovers_from_a_missing_view_value() {
     assert!(message.contains("期望 属性值"), "诊断：\n{message}");
     assert!(message.contains("第 1 行"), "诊断：\n{message}");
 }
+
+#[test]
+fn parses_unsafe_blocks_and_raw_pointer_types() {
+    let program = parse_ok(include_str!("fixtures/unsafe_raw_pointer.li"));
+
+    let declaration = program
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Item::Type(declaration) if declaration.name.as_str() == "缓冲区" => {
+                Some(declaration)
+            }
+            _ => None,
+        })
+        .expect("缺少缓冲区类型声明");
+    assert!(
+        matches!(declaration.fields[0].ty.kind, TypeKind::RawPointer(_)),
+        "字段类型应为原生指针：{:?}",
+        declaration.fields[0].ty
+    );
+
+    let null_pointer = function(&program, "空指针");
+    assert!(
+        matches!(null_pointer.return_type.kind, TypeKind::RawPointer(_)),
+        "返回类型应为原生指针：{:?}",
+        null_pointer.return_type
+    );
+    let Stmt::Unsafe(unsafe_stmt) = &null_pointer.body.stmts[0] else {
+        panic!("空指针函数体应以不安全块开始");
+    };
+    assert!(matches!(unsafe_stmt.body.stmts[0], Stmt::Return(_)));
+
+    let main = function(&program, "主");
+    let Stmt::Unsafe(unsafe_stmt) = &main.body.stmts[0] else {
+        panic!("主函数体应以不安全块开始");
+    };
+
+    let Stmt::Let(pointer) = &unsafe_stmt.body.stmts[0] else {
+        panic!("不安全块内应以变量声明开始");
+    };
+    assert_eq!(pointer.name.as_str(), "指针");
+    let annotation = pointer.ty.as_ref().expect("指针变量应有类型标注");
+    assert!(
+        matches!(annotation.kind, TypeKind::RawPointer(_)),
+        "标注应为原生指针：{:?}",
+        annotation
+    );
+}

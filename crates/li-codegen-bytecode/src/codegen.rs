@@ -339,6 +339,46 @@ impl<'a> FunctionEmitter<'a> {
                     }
                 }
             }
+            IrInstruction::BuiltinCall {
+                dest,
+                receiver,
+                method,
+                args,
+                ..
+            } => {
+                self.push_operand(receiver, span);
+                for argument in args {
+                    self.push_operand(argument, span);
+                }
+                self.emit(
+                    Opcode::InvokeBuiltin,
+                    vec![
+                        InstructionArg::Name(method.qualified_name().to_owned()),
+                        InstructionArg::Integer(args.len()),
+                    ],
+                    span,
+                );
+                self.emit_store(dest, span);
+            }
+            IrInstruction::BuiltinFunctionCall {
+                dest,
+                function,
+                args,
+                ..
+            } => {
+                for argument in args {
+                    self.push_operand(argument, span);
+                }
+                self.emit(
+                    Opcode::InvokeBuiltin,
+                    vec![
+                        InstructionArg::Name(function.name().to_owned()),
+                        InstructionArg::Integer(args.len()),
+                    ],
+                    span,
+                );
+                self.emit_store(dest, span);
+            }
             IrInstruction::Input { dest, .. } => {
                 self.emit(Opcode::Input, Vec::new(), span);
                 self.emit_store(dest, span);

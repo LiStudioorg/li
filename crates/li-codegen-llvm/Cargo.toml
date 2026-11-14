@@ -1,0 +1,19 @@
+[package]
+name = "li-codegen-llvm"
+description = "li 语言中立 IR 的 LLVM 文本后端"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+li-errors.workspace = true
+li-ir.workspace = true
+
+[dev-dependencies]
+li-parser.workspace = true
+li-sema.workspace = true
+
+[lints]
+workspace = true

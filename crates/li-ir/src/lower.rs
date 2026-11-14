@@ -16,8 +16,9 @@ use li_ast::{
 use li_errors::{Diagnostic, DiagnosticBag, Span};
 
 use crate::ir::{
-    BasicBlock, BinaryOp, Constant, Function, Instruction, IrType, Label, Local, Operand,
-    Parameter, Place, Program, StructDecl, StructField, TempId, Terminator, UnaryOp,
+    BasicBlock, BinaryOp, BuiltinFunction, BuiltinMethod, Constant, Function, Instruction, IrType,
+    Label, Local, Operand, Parameter, Place, Program, StructDecl, StructField, TempId, Terminator,
+    UnaryOp,
 };
 
 /// 对整份 AST 程序执行降级。
@@ -51,6 +52,11 @@ impl TypeContext {
             TypeKind::Bool => IrType::Bool,
             TypeKind::String => IrType::String,
             TypeKind::List(element) => IrType::List(Box::new(self.resolve_type(element))),
+            TypeKind::Dictionary { key, value } => IrType::Dictionary {
+                key: Box::new(self.resolve_type(key)),
+                value: Box::new(self.resolve_type(value)),
+            },
+            TypeKind::RawPointer(inner) => IrType::RawPointer(Box::new(self.resolve_type(inner))),
             TypeKind::Optional(inner) => IrType::Optional(Box::new(self.resolve_type(inner))),
             TypeKind::Result { value, error } => IrType::Result {
                 ok: Box::new(self.resolve_type(value)),
@@ -138,6 +144,7 @@ impl Lowerer {
         Program {
             structs: ir_structs,
             functions: ir_functions,
+            uses_unsafe: items_contain_unsafe(&program.items),
         }
     }
 
@@ -231,6 +238,11 @@ impl Lowerer {
             TypeKind::Bool => IrType::Bool,
             TypeKind::String => IrType::String,
             TypeKind::List(element) => IrType::List(Box::new(self.resolve_type(element))),
+            TypeKind::Dictionary { key, value } => IrType::Dictionary {
+                key: Box::new(self.resolve_type(key)),
+                value: Box::new(self.resolve_type(value)),
+            },
+            TypeKind::RawPointer(inner) => IrType::RawPointer(Box::new(self.resolve_type(inner))),
             TypeKind::Optional(inner) => IrType::Optional(Box::new(self.resolve_type(inner))),
             TypeKind::Result { value, error } => IrType::Result {
                 ok: Box::new(self.resolve_type(value)),
@@ -500,6 +512,7 @@ impl<'a> FunctionLowerer<'a> {
             Stmt::Break(stmt) => self.lower_break(stmt.span),
             Stmt::Continue(stmt) => self.lower_continue(stmt.span),
             Stmt::Match(stmt) => self.lower_match(stmt),
+            Stmt::Unsafe(stmt) => self.lower_block(&stmt.body),
             Stmt::Print(stmt) => self.lower_print(stmt),
         }
     }
@@ -976,6 +989,10 @@ impl<'a> FunctionLowerer<'a> {
     }
 
     fn lower_call(&mut self, callee: &Expr, args: &[Expr], span: Span) -> TypedValue {
+        if let ExprKind::FieldAccess { object, field } = &callee.kind {
+            return self.lower_builtin_call(object, field, args, span);
+        }
+
         let function_name = match &callee.kind {
             ExprKind::Identifier(ident) => Some(ident.name.clone()),
             _ => {
@@ -984,15 +1001,19 @@ impl<'a> FunctionLowerer<'a> {
             }
         };
 
-        let signature = function_name
-            .as_ref()
-            .and_then(|name| self.context.functions.get(name).cloned());
-
-        if let Some(name) = &function_name {
-            if signature.is_none() {
-                self.report(callee.span, format!("未定义的函数「{name}」"));
-            }
-        }
+        let (signature, builtin) = match &function_name {
+            Some(name) => match self.context.functions.get(name).cloned() {
+                Some(signature) => (Some(signature), None),
+                None => match BuiltinFunction::from_name(name) {
+                    Some(function) => (Some(builtin_function_signature(function)), Some(function)),
+                    None => {
+                        self.report(callee.span, format!("未定义的函数「{name}」"));
+                        (None, None)
+                    }
+                },
+            },
+            None => (None, None),
+        };
 
         let mut arguments = Vec::with_capacity(args.len());
         for (index, argument) in args.iter().enumerate() {
@@ -1013,19 +1034,95 @@ impl<'a> FunctionLowerer<'a> {
             .map(|signature| signature.return_type.clone())
             .unwrap_or(IrType::Unknown);
         let dest = self.new_temp();
+
+        match builtin {
+            Some(function) => self.emit(
+                Instruction::BuiltinFunctionCall {
+                    dest: dest.clone(),
+                    function,
+                    args: arguments,
+                    ty: return_type.clone(),
+                },
+                span,
+            ),
+            None => self.emit(
+                Instruction::Call {
+                    dest: Some(dest.clone()),
+                    function: function_name.unwrap_or_else(|| "<未知函数>".to_owned()),
+                    args: arguments,
+                    ty: return_type.clone(),
+                },
+                span,
+            ),
+        }
+
+        TypedValue {
+            operand: Operand::Place(dest),
+            ty: return_type,
+        }
+    }
+
+    /// 把点号方法调用降级为内置调用指令。
+    ///
+    /// 接收者与实参都先降级为三地址码；方法本身由 [`BuiltinMethod`]
+    /// 记录为稳定标识，具体平台映射由后端完成。
+    fn lower_builtin_call(
+        &mut self,
+        object: &Expr,
+        field: &li_ast::Ident,
+        args: &[Expr],
+        span: Span,
+    ) -> TypedValue {
+        let receiver = self.lower_expr(object);
+        let mut arguments = Vec::with_capacity(args.len());
+
+        for argument in args {
+            arguments.push(self.lower_expr(argument).operand);
+        }
+
+        let Some(method) = builtin_method_for(&receiver.ty, &field.name) else {
+            if !matches!(receiver.ty, IrType::Unknown) {
+                let message = match &receiver.ty {
+                    IrType::String => format!("字符串没有方法「{}」", field.name),
+                    IrType::List(_) => format!("列表没有方法「{}」", field.name),
+                    other => format!("类型「{other}」不支持方法「{}」", field.name),
+                };
+                self.report(field.span, message);
+            }
+
+            return TypedValue {
+                operand: Operand::Constant(Constant::Null),
+                ty: IrType::Unknown,
+            };
+        };
+
+        if arguments.len() != method.arity() {
+            self.report(
+                span,
+                format!(
+                    "内置方法「{method}」需要 {} 个参数，实际为 {} 个",
+                    method.arity(),
+                    arguments.len()
+                ),
+            );
+        }
+
+        let ty = builtin_return_type(method, &receiver.ty);
+        let dest = self.new_temp();
         self.emit(
-            Instruction::Call {
-                dest: Some(dest.clone()),
-                function: function_name.unwrap_or_else(|| "<未知函数>".to_owned()),
+            Instruction::BuiltinCall {
+                dest: dest.clone(),
+                receiver: receiver.operand,
+                method,
                 args: arguments,
-                ty: return_type.clone(),
+                ty: ty.clone(),
             },
             span,
         );
 
         TypedValue {
             operand: Operand::Place(dest),
-            ty: return_type,
+            ty,
         }
     }
 
@@ -1196,6 +1293,35 @@ impl<'a> FunctionLowerer<'a> {
     }
 }
 
+/// 检查程序项中是否包含 `不安全` 块。
+fn items_contain_unsafe(items: &[Item]) -> bool {
+    items.iter().any(|item| match item {
+        Item::Function(function) => block_contains_unsafe(&function.body),
+        Item::Module(module) => items_contain_unsafe(&module.items),
+        Item::Import(_) | Item::Type(_) | Item::View(_) => false,
+    })
+}
+
+/// 检查语句块中是否包含 `不安全` 块。
+fn block_contains_unsafe(block: &Block) -> bool {
+    block.stmts.iter().any(|statement| match statement {
+        Stmt::Unsafe(_) => true,
+        Stmt::If(statement) => {
+            block_contains_unsafe(&statement.then_branch)
+                || statement
+                    .else_branch
+                    .as_ref()
+                    .is_some_and(block_contains_unsafe)
+        }
+        Stmt::While(statement) => block_contains_unsafe(&statement.body),
+        Stmt::Match(statement) => statement
+            .arms
+            .iter()
+            .any(|arm| block_contains_unsafe(&arm.body)),
+        _ => false,
+    })
+}
+
 fn constant_from_literal(literal: &Literal) -> Constant {
     match literal {
         Literal::Integer(value) => Constant::Integer(*value),
@@ -1203,5 +1329,89 @@ fn constant_from_literal(literal: &Literal) -> Constant {
         Literal::Bool(value) => Constant::Bool(*value),
         Literal::String(value) => Constant::String(value.clone()),
         Literal::Null => Constant::Null,
+    }
+}
+
+/// 根据接收者静态类型与方法名解析内置方法。
+fn builtin_method_for(receiver: &IrType, name: &str) -> Option<BuiltinMethod> {
+    match (receiver, name) {
+        (IrType::String, "长度") => Some(BuiltinMethod::StringLength),
+        (IrType::String, "拼接") => Some(BuiltinMethod::StringConcat),
+        (IrType::String, "转整数") => Some(BuiltinMethod::StringParseInteger),
+        (IrType::String, "包含") => Some(BuiltinMethod::StringContains),
+        (IrType::String, "字符") => Some(BuiltinMethod::StringChar),
+        (IrType::String, "切片") => Some(BuiltinMethod::StringSlice),
+        (IrType::String, "查找") => Some(BuiltinMethod::StringFind),
+        (IrType::String, "替换") => Some(BuiltinMethod::StringReplace),
+        (IrType::String, "分割") => Some(BuiltinMethod::StringSplit),
+        (IrType::List(_), "长度") => Some(BuiltinMethod::ListLength),
+        (IrType::List(_), "添加") => Some(BuiltinMethod::ListAdd),
+        (IrType::List(_), "获取") => Some(BuiltinMethod::ListGet),
+        (IrType::List(_), "删除") => Some(BuiltinMethod::ListRemove),
+        (IrType::Dictionary { .. }, "长度") => Some(BuiltinMethod::DictionaryLength),
+        (IrType::Dictionary { .. }, "插入") => Some(BuiltinMethod::DictionaryInsert),
+        (IrType::Dictionary { .. }, "获取") => Some(BuiltinMethod::DictionaryGet),
+        (IrType::Dictionary { .. }, "删除") => Some(BuiltinMethod::DictionaryRemove),
+        (IrType::Dictionary { .. }, "包含键") => Some(BuiltinMethod::DictionaryContainsKey),
+        _ => None,
+    }
+}
+
+/// 推导内置方法的返回类型。
+fn builtin_return_type(method: BuiltinMethod, receiver: &IrType) -> IrType {
+    match method {
+        BuiltinMethod::StringLength
+        | BuiltinMethod::ListLength
+        | BuiltinMethod::DictionaryLength => IrType::Integer,
+        BuiltinMethod::StringConcat | BuiltinMethod::StringSlice | BuiltinMethod::StringReplace => {
+            IrType::String
+        }
+        BuiltinMethod::StringParseInteger => IrType::Result {
+            ok: Box::new(IrType::Integer),
+            error: Box::new(IrType::String),
+        },
+        BuiltinMethod::StringChar => IrType::Optional(Box::new(IrType::String)),
+        BuiltinMethod::StringFind => IrType::Optional(Box::new(IrType::Integer)),
+        BuiltinMethod::StringSplit => IrType::List(Box::new(IrType::String)),
+        BuiltinMethod::StringContains
+        | BuiltinMethod::ListRemove
+        | BuiltinMethod::DictionaryRemove
+        | BuiltinMethod::DictionaryContainsKey => IrType::Bool,
+        BuiltinMethod::ListAdd | BuiltinMethod::DictionaryInsert => receiver.clone(),
+        BuiltinMethod::ListGet => match receiver {
+            IrType::List(element) => IrType::Optional(Box::new((**element).clone())),
+            _ => IrType::Unknown,
+        },
+        BuiltinMethod::DictionaryGet => match receiver {
+            IrType::Dictionary { value, .. } => IrType::Optional(Box::new((**value).clone())),
+            _ => IrType::Unknown,
+        },
+    }
+}
+
+/// 语言级内置函数的 IR 签名。
+fn builtin_function_signature(function: BuiltinFunction) -> Signature {
+    match function {
+        BuiltinFunction::ReadText => Signature {
+            params: vec![IrType::String],
+            return_type: IrType::Result {
+                ok: Box::new(IrType::String),
+                error: Box::new(IrType::String),
+            },
+        },
+        BuiltinFunction::WriteText => Signature {
+            params: vec![IrType::String, IrType::String],
+            return_type: IrType::Result {
+                ok: Box::new(IrType::Integer),
+                error: Box::new(IrType::String),
+            },
+        },
+        BuiltinFunction::NewDictionary => Signature {
+            params: Vec::new(),
+            return_type: IrType::Dictionary {
+                key: Box::new(IrType::Unknown),
+                value: Box::new(IrType::Unknown),
+            },
+        },
     }
 }

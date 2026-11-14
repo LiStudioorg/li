@@ -68,6 +68,12 @@ pub enum TokenKind {
     Input,
     /// `视图` / `view`，用于 `.lui` 视图文件。
     View,
+    /// `不安全` / `unsafe`，用于底层内存操作块。
+    Unsafe,
+    /// `异步` / `async`，异步函数修饰符（当前版本仅预留）。
+    Async,
+    /// `等待` / `await`，等待异步结果（当前版本仅预留）。
+    Await,
 
     // ---- 基础类型关键字 ----
     /// `整数` / `int`。
@@ -80,10 +86,20 @@ pub enum TokenKind {
     StringType,
     /// `列表` / `list`。
     ListType,
+    /// `字典` / `dictionary` / `map`。
+    DictionaryType,
     /// `可选` / `option` / `optional`。
     OptionalType,
     /// `结果` / `result`。
     ResultType,
+    /// `原生指针` / `rawptr` / `ptr`。
+    RawPointerType,
+    /// `通道` / `channel`，并发通道类型（当前版本仅预留）。
+    ChannelType,
+    /// `共享` / `shared`，共享所有权类型（当前版本仅预留）。
+    SharedType,
+    /// `借用` / `borrow`，借用类型（当前版本仅预留）。
+    BorrowType,
 
     // ---- 运算符 ----
     /// `加` 或 `+`。
@@ -177,13 +193,21 @@ impl TokenKind {
             Self::Print => "打印",
             Self::Input => "输入",
             Self::View => "视图",
+            Self::Unsafe => "不安全",
+            Self::Async => "异步",
+            Self::Await => "等待",
             Self::IntegerType => "整数",
             Self::FloatType => "小数",
             Self::BoolType => "布尔",
             Self::StringType => "字符串",
             Self::ListType => "列表",
+            Self::DictionaryType => "字典",
             Self::OptionalType => "可选",
             Self::ResultType => "结果",
+            Self::RawPointerType => "原生指针",
+            Self::ChannelType => "通道",
+            Self::SharedType => "共享",
+            Self::BorrowType => "借用",
             Self::Plus => "加",
             Self::Minus => "减",
             Self::Star => "乘",
@@ -231,14 +255,22 @@ impl fmt::Display for TokenKind {
             Self::Print => f.write_str("`打印`"),
             Self::Input => f.write_str("`输入`"),
             Self::View => f.write_str("`视图`"),
+            Self::Unsafe => f.write_str("`不安全`"),
+            Self::Async => f.write_str("`异步`"),
+            Self::Await => f.write_str("`等待`"),
 
             Self::IntegerType => f.write_str("`整数`"),
             Self::FloatType => f.write_str("`小数`"),
             Self::BoolType => f.write_str("`布尔`"),
             Self::StringType => f.write_str("`字符串`"),
             Self::ListType => f.write_str("`列表`"),
+            Self::DictionaryType => f.write_str("`字典`"),
             Self::OptionalType => f.write_str("`可选`"),
             Self::ResultType => f.write_str("`结果`"),
+            Self::RawPointerType => f.write_str("`原生指针`"),
+            Self::ChannelType => f.write_str("`通道`"),
+            Self::SharedType => f.write_str("`共享`"),
+            Self::BorrowType => f.write_str("`借用`"),
 
             Self::Plus => f.write_str("`+`"),
             Self::Minus => f.write_str("`-`"),

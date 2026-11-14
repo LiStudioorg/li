@@ -168,3 +168,56 @@ fn reports_text_address_gaps_with_line_and_column() {
         "错误格式不符合预期：{error}"
     );
 }
+
+#[test]
+fn validates_builtin_method_and_function_invocations() {
+    let function = Instruction::new(
+        Opcode::InvokeBuiltin,
+        vec![
+            InstructionArg::Name("新建字典".to_owned()),
+            InstructionArg::Integer(0),
+        ],
+        Span::default(),
+    );
+    assert!(function.validate().is_ok());
+
+    let method = Instruction::new(
+        Opcode::InvokeBuiltin,
+        vec![
+            InstructionArg::Name("字符串.分割".to_owned()),
+            InstructionArg::Integer(1),
+        ],
+        Span::default(),
+    );
+    assert!(method.validate().is_ok());
+
+    let wrong_arity = Instruction::new(
+        Opcode::InvokeBuiltin,
+        vec![
+            InstructionArg::Name("字符串.切片".to_owned()),
+            InstructionArg::Integer(1),
+        ],
+        Span::default(),
+    );
+    let message = wrong_arity
+        .validate()
+        .expect_err("内置方法参数数量不匹配必须被拒绝");
+    assert!(
+        message.contains("字符串.切片") && message.contains("需要 2 个实参"),
+        "错误信息不符合预期：{message}"
+    );
+
+    let unknown = Instruction::new(
+        Opcode::InvokeBuiltin,
+        vec![
+            InstructionArg::Name("未知内置".to_owned()),
+            InstructionArg::Integer(0),
+        ],
+        Span::default(),
+    );
+    let message = unknown.validate().expect_err("未知内置名称必须被拒绝");
+    assert!(
+        message.contains("未知的内置方法或函数"),
+        "错误信息不符合预期：{message}"
+    );
+}

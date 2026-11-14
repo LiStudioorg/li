@@ -21,6 +21,13 @@ pub(crate) enum Ty {
     Null,
     /// 列表。
     List(Box<Ty>),
+    /// 字典。
+    Dictionary {
+        /// 键类型。
+        key: Box<Ty>,
+        /// 值类型。
+        value: Box<Ty>,
+    },
     /// 可选类型。
     Optional(Box<Ty>),
     /// 结果类型。
@@ -30,6 +37,8 @@ pub(crate) enum Ty {
         /// 失败值的类型。
         error: Box<Ty>,
     },
+    /// 原生指针类型。
+    RawPointer(Box<Ty>),
     /// 程序内声明的结构体类型。
     Struct(String),
     /// 类型无法确定；使用该类型时不重复报告错误。
@@ -46,6 +55,21 @@ impl Ty {
     pub(crate) fn is_error(&self) -> bool {
         matches!(self, Self::Error)
     }
+
+    /// 是否可以作为字典键。
+    ///
+    /// 第一版字典由宿主哈希表实现，因此键必须是可稳定哈希的标量类型。
+    pub(crate) fn is_hashable(&self) -> bool {
+        matches!(
+            self,
+            Self::Integer | Self::Float | Self::Bool | Self::String | Self::Error
+        )
+    }
+
+    /// 是否为原生指针。
+    pub(crate) fn is_raw_pointer(&self) -> bool {
+        matches!(self, Self::RawPointer(_))
+    }
 }
 
 impl fmt::Display for Ty {
@@ -57,8 +81,10 @@ impl fmt::Display for Ty {
             Self::String => f.write_str("字符串"),
             Self::Null => f.write_str("空"),
             Self::List(element) => write!(f, "列表<{element}>"),
+            Self::Dictionary { key, value } => write!(f, "字典<{key}, {value}>"),
             Self::Optional(inner) => write!(f, "可选<{inner}>"),
             Self::Result { ok, error } => write!(f, "结果<{ok}, {error}>"),
+            Self::RawPointer(inner) => write!(f, "原生指针<{inner}>"),
             Self::Struct(name) => f.write_str(name),
             Self::Error => f.write_str("错误类型"),
         }

@@ -518,3 +518,69 @@ fn token_kind_display_uses_chinese_descriptions() {
     assert_eq!(TokenKind::If.to_string(), "`如果`");
     assert_eq!(TokenKind::EqualEqual.to_string(), "`==`");
 }
+
+#[test]
+fn lexes_unsafe_and_raw_pointer_keywords() {
+    let all_tokens = tokens("不安全 原生指针<整数> 不安全 unsafe rawptr");
+
+    let kinds = all_tokens
+        .iter()
+        .map(|token| token.kind.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        kinds,
+        vec![
+            TokenKind::Unsafe,
+            TokenKind::RawPointerType,
+            TokenKind::Less,
+            TokenKind::IntegerType,
+            TokenKind::Greater,
+            TokenKind::Unsafe,
+            TokenKind::Unsafe,
+            TokenKind::RawPointerType,
+            TokenKind::Eof,
+        ]
+    );
+    assert_eq!(TokenKind::Unsafe.to_string(), "`不安全`");
+    assert_eq!(TokenKind::RawPointerType.to_string(), "`原生指针`");
+}
+
+#[test]
+fn reserves_concurrency_keywords() {
+    assert_eq!(
+        kinds("异步 等待 通道<整数> 共享<字符串> 借用<整数>"),
+        vec![
+            TokenKind::Async,
+            TokenKind::Await,
+            TokenKind::ChannelType,
+            TokenKind::Less,
+            TokenKind::IntegerType,
+            TokenKind::Greater,
+            TokenKind::SharedType,
+            TokenKind::Less,
+            TokenKind::StringType,
+            TokenKind::Greater,
+            TokenKind::BorrowType,
+            TokenKind::Less,
+            TokenKind::IntegerType,
+            TokenKind::Greater,
+        ]
+    );
+
+    assert_eq!(
+        kinds("async await channel shared borrow"),
+        vec![
+            TokenKind::Async,
+            TokenKind::Await,
+            TokenKind::ChannelType,
+            TokenKind::SharedType,
+            TokenKind::BorrowType,
+        ]
+    );
+
+    assert_eq!(TokenKind::Async.to_string(), "`异步`");
+    assert_eq!(TokenKind::Await.to_string(), "`等待`");
+    assert_eq!(TokenKind::ChannelType.to_string(), "`通道`");
+    assert_eq!(TokenKind::SharedType.to_string(), "`共享`");
+    assert_eq!(TokenKind::BorrowType.to_string(), "`借用`");
+}

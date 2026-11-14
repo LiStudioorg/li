@@ -44,7 +44,7 @@ fn compiles_a_li_file_to_javascript() {
 
     let javascript_path = directory.join("示例.js");
     let javascript = fs::read_to_string(&javascript_path).expect("未生成 JavaScript 文件");
-    assert!(javascript.contains("console.log(42);"));
+    assert!(javascript.contains("console.log(__li_显示(42));"));
     assert!(javascript.contains("主();"));
 
     if Command::new("node").arg("--version").output().is_ok() {
@@ -58,6 +58,61 @@ fn compiles_a_li_file_to_javascript() {
             String::from_utf8_lossy(&result.stderr)
         );
         assert_eq!(String::from_utf8_lossy(&result.stdout), "42\n");
+    }
+
+    let _ = fs::remove_dir_all(&directory);
+}
+
+#[test]
+fn compiles_a_li_file_to_llvm_ir() {
+    let directory = temp_directory("li-cli-llvm");
+    let input = directory.join("斐波那契.li");
+    fs::write(
+        &input,
+        include_str!("../../li-parser/tests/fixtures/fibonacci.li"),
+    )
+    .expect("无法写入 li 源文件");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_li"))
+        .arg("编译-llvm")
+        .arg(&input)
+        .output()
+        .expect("无法启动 li 编译器");
+
+    assert!(
+        output.status.success(),
+        "编译失败：\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("已生成 LLVM IR"), "缺少成功提示：{stdout}");
+
+    let llvm_path = directory.join("斐波那契.ll");
+    let llvm = fs::read_to_string(&llvm_path).expect("未生成 .ll 文件");
+    assert!(llvm.contains("define i32 @main()"), "LLVM IR：\n{llvm}");
+    assert!(llvm.contains("@\"斐波那契\""), "LLVM IR：\n{llvm}");
+    assert!(llvm.contains("br i1"), "LLVM IR：\n{llvm}");
+
+    // 环境提供 clang 时，顺带验证生成的 IR 可以被 LLVM 接受并执行。
+    if Command::new("clang").arg("--version").output().is_ok() {
+        let executable = directory.join("斐波那契");
+        let clang = Command::new("clang")
+            .arg(&llvm_path)
+            .arg("-o")
+            .arg(&executable)
+            .output()
+            .expect("无法启动 clang");
+        assert!(
+            clang.status.success(),
+            "clang 编译失败：\n{}",
+            String::from_utf8_lossy(&clang.stderr)
+        );
+
+        let run = Command::new(&executable)
+            .output()
+            .expect("无法运行原生可执行文件");
+        assert_eq!(String::from_utf8_lossy(&run.stdout), "55\n");
     }
 
     let _ = fs::remove_dir_all(&directory);

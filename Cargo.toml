@@ -11,6 +11,7 @@ members = [
     "crates/li-codegen-js",
     "crates/li-codegen-bytecode",
     "crates/li-codegen-html",
+    "crates/li-codegen-llvm",
     "crates/li-vm",
     "crates/li-cli",
 ]
@@ -32,6 +33,7 @@ li-ir = { path = "crates/li-ir" }
 li-codegen-js = { path = "crates/li-codegen-js" }
 li-codegen-bytecode = { path = "crates/li-codegen-bytecode" }
 li-codegen-html = { path = "crates/li-codegen-html" }
+li-codegen-llvm = { path = "crates/li-codegen-llvm" }
 li-vm = { path = "crates/li-vm" }
 
 # 编译器不依赖 unsafe 代码；后续若确有必要，应在局部显式豁免并说明原因。
