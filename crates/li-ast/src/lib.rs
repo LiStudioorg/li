@@ -29,4 +29,7 @@ pub use stmt::{
     PrintStmt, ReturnStmt, Stmt, UnsafeStmt, WhileStmt,
 };
 pub use ty::{Type, TypeKind};
-pub use view::{ViewAttribute, ViewContent, ViewDecl, ViewNode, ViewValue, ViewValueKind};
+pub use view::{
+    ViewAttribute, ViewContent, ViewDecl, ViewEvent, ViewNode, ViewTextPart, ViewTextPartKind,
+    ViewValue, ViewValueKind,
+};

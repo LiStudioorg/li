@@ -418,3 +418,107 @@ fn runs_standard_library_pipeline_through_real_cli() {
 
     let _ = fs::remove_dir_all(&directory);
 }
+
+#[test]
+fn compiles_single_file_interactive_html_through_cli() {
+    let directory = temp_directory("li-cli-交互视图");
+    let input = directory.join("计数器.lui");
+    fs::write(
+        &input,
+        include_str!("../../li-parser/tests/fixtures/counter.lui"),
+    )
+    .expect("无法写入视图文件");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_li"))
+        .arg("编译-html")
+        .arg(&input)
+        .output()
+        .expect("无法启动 li 编译器");
+    assert!(
+        output.status.success(),
+        "编译失败：\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let html = fs::read_to_string(directory.join("计数器.html")).expect("未生成 HTML");
+    assert!(html.contains("<script>"), "产物缺少内联脚本：\n{html}");
+    assert!(
+        html.contains("addEventListener(\"click\""),
+        "产物缺少点击绑定：\n{html}"
+    );
+    assert!(
+        !html.contains("src=") && !html.contains("<link"),
+        "产物不得引用外部资源：\n{html}"
+    );
+
+    let _ = fs::remove_dir_all(&directory);
+}
+
+#[test]
+fn serves_single_file_view_over_http() {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::TcpStream;
+
+    let directory = temp_directory("li-cli-服务");
+    let input = directory.join("计数器.lui");
+    fs::write(
+        &input,
+        include_str!("../../li-parser/tests/fixtures/counter.lui"),
+    )
+    .expect("无法写入视图文件");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_li"))
+        .arg("服务")
+        .arg(&input)
+        .arg("0")
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("无法启动 li 服务");
+
+    let stdout = child.stdout.take().expect("无法读取服务输出");
+    let mut reader = BufReader::new(stdout);
+    let mut line = String::new();
+    reader.read_line(&mut line).expect("无法读取启动信息");
+    let address = line
+        .trim()
+        .strip_prefix("服务已启动：http://")
+        .and_then(|rest| rest.strip_suffix('/'))
+        .unwrap_or_else(|| panic!("启动信息格式不正确：{line}"));
+
+    let mut stream = TcpStream::connect(address).expect("无法连接 li 服务");
+    stream
+        .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .expect("无法发送请求");
+    let mut response = String::new();
+    stream.read_to_string(&mut response).expect("无法读取响应");
+
+    assert!(
+        response.starts_with("HTTP/1.1 200 OK"),
+        "响应：\n{response}"
+    );
+    assert!(
+        response.contains("当前计数："),
+        "响应缺少视图内容：\n{response}"
+    );
+    assert!(
+        response.contains("addEventListener(\"click\""),
+        "响应缺少内联交互脚本：\n{response}"
+    );
+
+    let mut missing = TcpStream::connect(address).expect("无法连接 li 服务");
+    missing
+        .write_all(b"GET /missing HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .expect("无法发送请求");
+    let mut missing_response = String::new();
+    missing
+        .read_to_string(&mut missing_response)
+        .expect("无法读取响应");
+    assert!(
+        missing_response.starts_with("HTTP/1.1 404 Not Found"),
+        "响应：\n{missing_response}"
+    );
+
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = fs::remove_dir_all(&directory);
+}

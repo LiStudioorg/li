@@ -203,3 +203,27 @@ pub(crate) const TAG_HELP: &str =
 /// 未知属性诊断中展示的常用属性提示。
 pub(crate) const ATTRIBUTE_HELP: &str =
     "常用属性：类、标识、样式、链接、来源、替代、类型、名称、值、占位、宽度、高度、禁用";
+
+/// 把中文事件名映射为标准 DOM 事件名。
+pub(crate) fn event(name: &str) -> Option<&'static str> {
+    let event = match name {
+        "点击" => "click",
+        "双击" => "dblclick",
+        "输入" => "input",
+        "改变" => "change",
+        "提交" => "submit",
+        "聚焦" => "focus",
+        "失焦" => "blur",
+        "按下" => "keydown",
+        "松开" => "keyup",
+        "鼠标进入" => "mouseenter",
+        "鼠标离开" => "mouseleave",
+        _ => return None,
+    };
+
+    Some(event)
+}
+
+/// 未知事件诊断中展示的可用事件提示。
+pub(crate) const EVENT_HELP: &str =
+    "可用事件：点击、双击、输入、改变、提交、聚焦、失焦、按下、松开、鼠标进入、鼠标离开";

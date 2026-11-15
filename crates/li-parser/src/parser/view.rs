@@ -1,6 +1,17 @@
 //! `.lui` 视图声明解析。
 //!
-//! 视图语法只包含三种结构：视图根、元素节点与属性。
+//! 视图语法只包含视图根、元素节点、属性、事件与状态：
+//!
+//! ```text
+//! 视图 {
+//!     状态 { 让 可变 次数 = 0; }
+//!     容器 {
+//!         文本 { 「计数：」, 次数 }
+//!         按钮 { 点击 { 次数 = 次数 加 1; } 文本 { 「加一」 } }
+//!     }
+//! }
+//! ```
+//!
 //! 解析器允许逗号或分号作为可选的项分隔符，因此下面两种写法等价：
 //!
 //! ```text
@@ -9,18 +20,42 @@
 //! ```
 //!
 //! 属性必须写在子节点之前；`文本 { 「...」 }` 中的字符串使用
-//! li 统一的 `「」` 定界符，不接受 ASCII 引号。
+//! li 统一的 `「」` 定界符，不接受 ASCII 引号。属性值写作 `{ 表达式 }`
+//! 时表示运行时绑定。
 
-use li_ast::{Ident, ViewAttribute, ViewContent, ViewDecl, ViewNode, ViewValue, ViewValueKind};
+use li_ast::{
+    Ident, Stmt, ViewAttribute, ViewContent, ViewDecl, ViewEvent, ViewNode, ViewTextPart,
+    ViewTextPartKind, ViewValue, ViewValueKind,
+};
 use li_errors::{Diagnostic, Position, Span};
 use li_lexer::{Token, TokenKind};
 
 use super::Parser;
 
+/// 解析器能够识别的事件名。只有出现在此表中的名称才会被当作事件，
+/// 其余 `名称 { ... }` 仍然是子节点。
+const VIEW_EVENT_NAMES: &[&str] = &[
+    "点击",
+    "双击",
+    "输入",
+    "改变",
+    "提交",
+    "聚焦",
+    "失焦",
+    "按下",
+    "松开",
+    "鼠标进入",
+    "鼠标离开",
+];
+
 /// 视图节点体解析后的内部结果。
 struct ParsedViewBody {
     /// 节点属性。
     attributes: Vec<ViewAttribute>,
+    /// 节点事件。
+    events: Vec<ViewEvent>,
+    /// 视图状态声明，仅根节点使用。
+    state: Vec<Stmt>,
     /// 节点内容。
     content: ViewContent,
     /// 右花括号结束位置。
@@ -32,20 +67,25 @@ impl Parser {
     pub(super) fn parse_view(&mut self) -> Option<ViewDecl> {
         let view_token = self.advance();
         self.expect_kind(&TokenKind::LBrace, "`{`")?;
-        let body = self.parse_view_body()?;
+        let body = self.parse_view_body(true)?;
 
         Some(ViewDecl {
             attributes: body.attributes,
+            state: body.state,
             content: body.content,
             span: Span::new(view_token.span.start, body.end),
         })
     }
 
     /// 解析花括号内部的内容；调用前左花括号已经被消费。
-    fn parse_view_body(&mut self) -> Option<ParsedViewBody> {
+    ///
+    /// `is_root` 为真时允许 `状态 { ... }` 声明。
+    fn parse_view_body(&mut self, is_root: bool) -> Option<ParsedViewBody> {
         let mut attributes = Vec::new();
+        let mut state = Vec::new();
+        let mut events = Vec::new();
         let mut children = Vec::new();
-        let mut text = None;
+        let mut parts: Vec<ViewTextPart> = Vec::new();
         let mut has_content = false;
 
         while !self.check(&TokenKind::RBrace) && !self.is_eof() {
@@ -69,21 +109,66 @@ impl Parser {
                     Some(attribute) => attributes.push(attribute),
                     None => self.recover_view_item(),
                 }
-            } else if let TokenKind::String(value) = self.peek().kind.clone() {
-                if has_content {
+            } else if self.is_state_keyword() {
+                if !is_root {
                     self.diagnostics.push(
-                        Diagnostic::error("视图内容只能出现一次")
+                        Diagnostic::error("`状态` 只能写在视图根节点")
                             .with_span(self.peek().span)
-                            .with_note("一个节点要么包含字符串文本，要么包含子节点"),
+                            .with_note("请把状态声明移动到 `视图 { ... }` 的直接层级"),
+                    );
+                }
+                self.advance();
+                match self.parse_block() {
+                    Some(block) => {
+                        if is_root {
+                            state.extend(block.stmts);
+                        }
+                    }
+                    None => self.recover_view_item(),
+                }
+            } else if self.is_event_name() {
+                has_content = true;
+                match self.parse_view_event() {
+                    Some(event) => events.push(event),
+                    None => self.recover_view_item(),
+                }
+            } else if let TokenKind::String(value) = self.peek().kind.clone() {
+                if !children.is_empty() {
+                    self.diagnostics.push(
+                        Diagnostic::error("字符串文本之后不能再写子节点")
+                            .with_span(self.peek().span)
+                            .with_note("请把文本放进独立的 `文本 { 「...」 }` 节点"),
                     );
                     self.advance();
                 } else {
-                    text = Some(value);
                     has_content = true;
+                    let span = self.peek().span;
                     self.advance();
+                    parts.push(ViewTextPart {
+                        kind: ViewTextPartKind::Text(value),
+                        span,
+                    });
+                }
+            } else if self.is_binding_expression() {
+                if !children.is_empty() {
+                    self.diagnostics.push(
+                        Diagnostic::error("表达式文本之后不能再写子节点")
+                            .with_span(self.peek().span)
+                            .with_note("请把表达式放进独立的 `文本 { 表达式 }` 节点"),
+                    );
+                }
+
+                has_content = true;
+                let span = self.peek().span;
+                match self.parse_expression() {
+                    Some(expression) => parts.push(ViewTextPart {
+                        kind: ViewTextPartKind::Expression(expression),
+                        span,
+                    }),
+                    None => self.recover_view_item(),
                 }
             } else if self.is_view_name() {
-                if text.is_some() {
+                if !parts.is_empty() {
                     self.diagnostics.push(
                         Diagnostic::error("字符串文本之后不能再写子节点")
                             .with_span(self.peek().span)
@@ -97,7 +182,7 @@ impl Parser {
                     None => self.recover_view_item(),
                 }
             } else {
-                self.error_expected("视图属性、子节点或 `}`");
+                self.error_expected("视图属性、事件、子节点或 `}`");
                 self.recover_view_item();
             }
 
@@ -108,16 +193,27 @@ impl Parser {
         }
 
         let end = self.finish_block();
-        let content = if let Some(text) = text {
-            ViewContent::Text(text)
-        } else if children.is_empty() {
-            ViewContent::Empty
-        } else {
+        let content = if !children.is_empty() {
             ViewContent::Children(children)
+        } else if parts.is_empty() {
+            ViewContent::Empty
+        } else if parts.len() == 1 {
+            let part = parts.pop().expect("parts 只有一个元素");
+            match part.kind {
+                ViewTextPartKind::Text(text) => ViewContent::Text(text),
+                kind => ViewContent::Parts(vec![ViewTextPart {
+                    kind,
+                    span: part.span,
+                }]),
+            }
+        } else {
+            ViewContent::Parts(parts)
         };
 
         Some(ParsedViewBody {
             attributes,
+            state,
+            events,
             content,
             end,
         })
@@ -127,13 +223,26 @@ impl Parser {
     fn parse_view_node(&mut self) -> Option<ViewNode> {
         let name = self.parse_view_name("视图标签名")?;
         self.expect_kind(&TokenKind::LBrace, "`{`")?;
-        let body = self.parse_view_body()?;
+        let body = self.parse_view_body(false)?;
 
         Some(ViewNode {
             span: Span::new(name.span.start, body.end),
             name,
             attributes: body.attributes,
+            events: body.events,
             content: body.content,
+        })
+    }
+
+    /// 解析 `事件名 { 语句 }`。
+    fn parse_view_event(&mut self) -> Option<ViewEvent> {
+        let name = self.parse_view_name("事件名")?;
+        let body = self.parse_block()?;
+
+        Some(ViewEvent {
+            span: Span::new(name.span.start, body.span.end),
+            name,
+            body,
         })
     }
 
@@ -150,8 +259,18 @@ impl Parser {
         })
     }
 
-    /// 解析属性值：字符串、整数、小数、布尔值或标识符。
+    /// 解析属性值：字符串、整数、小数、布尔值、标识符或 `{ 表达式 }`。
     fn parse_view_value(&mut self) -> Option<ViewValue> {
+        if self.check(&TokenKind::LBrace) {
+            let open = self.advance();
+            let expression = self.parse_expression()?;
+            let close = self.expect_kind(&TokenKind::RBrace, "`}`")?;
+            return Some(ViewValue {
+                span: Span::new(open.span.start, close.span.end),
+                kind: ViewValueKind::Expression(expression),
+            });
+        }
+
         let token = self.peek().clone();
 
         let kind = match &token.kind {
@@ -166,7 +285,9 @@ impl Parser {
                     ViewValueKind::Identifier(name.to_owned())
                 }
                 _ => {
-                    self.error_expected("属性值（字符串、数字、`真`、`假` 或标识符）");
+                    self.error_expected(
+                        "属性值（字符串、数字、`真`、`假`、标识符或 `{ 表达式 }`）",
+                    );
                     return None;
                 }
             },
@@ -199,6 +320,33 @@ impl Parser {
     /// 当前 Token 是否可以作为视图名称。
     fn is_view_name(&self) -> bool {
         Self::view_name_text(self.peek()).is_some()
+    }
+
+    /// 当前 Token 是否为视图根部的 `状态` 关键字。
+    fn is_state_keyword(&self) -> bool {
+        matches!(&self.peek().kind, TokenKind::Identifier(name) if name == "状态")
+            && self.check_next(&TokenKind::LBrace)
+    }
+
+    /// 当前 Token 是否为已知事件名，且后面紧跟语句块。
+    fn is_event_name(&self) -> bool {
+        let Some(name) = Self::view_name_text(self.peek()) else {
+            return false;
+        };
+
+        VIEW_EVENT_NAMES.contains(&name) && self.check_next(&TokenKind::LBrace)
+    }
+
+    /// 当前位置是否是一个等待解析的文本表达式。
+    ///
+    /// 子节点必须写成 `名称 { ... }`，属性必须写成 `名称: ...`；
+    /// 其余可解析的表达式都视为文本插值。
+    fn is_binding_expression(&self) -> bool {
+        if !self.is_view_name() || self.check_next(&TokenKind::LBrace) {
+            return false;
+        }
+
+        !self.check_next(&TokenKind::Colon)
     }
 
     /// 从 Token 中取出视图名称文本。

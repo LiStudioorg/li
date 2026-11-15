@@ -5,7 +5,7 @@
 
 use li_ast::{
     BinaryOp, Expr, ExprKind, FuncDecl, Item, Literal, PatternKind, Program, Stmt, TypeKind,
-    UnaryOp, ViewContent, ViewValueKind,
+    UnaryOp, ViewContent, ViewTextPartKind, ViewValueKind,
 };
 use li_errors::DiagnosticBag;
 use li_parser::{parse, parse_source};
@@ -853,4 +853,81 @@ fn parses_unsafe_blocks_and_raw_pointer_types() {
         "标注应为原生指针：{:?}",
         annotation
     );
+}
+
+#[test]
+fn parses_view_state_events_and_text_bindings() {
+    let program = parse_ok(include_str!("fixtures/counter.lui"));
+    let view = view(&program);
+
+    assert_eq!(view.state.len(), 2, "状态块应包含两条声明");
+    let Stmt::Let(first) = &view.state[0] else {
+        panic!("状态应以变量声明开始");
+    };
+    assert!(first.mutable, "状态变量应允许修改");
+    assert_eq!(first.name.as_str(), "次数");
+
+    let ViewContent::Children(children) = &view.content else {
+        panic!("视图根节点应包含子节点");
+    };
+    let container = &children[0];
+
+    let ViewContent::Children(nodes) = &container.content else {
+        panic!("容器应包含子节点");
+    };
+
+    let ViewContent::Parts(parts) = &nodes[0].content else {
+        panic!("绑定文本应解析为混合片段，实际 {:?}", nodes[0].content);
+    };
+    assert_eq!(parts.len(), 2);
+    assert!(matches!(parts[0].kind, ViewTextPartKind::Text(_)));
+    assert!(matches!(
+        parts[1].kind,
+        ViewTextPartKind::Expression(Expr {
+            kind: ExprKind::Identifier(_),
+            ..
+        })
+    ));
+
+    let button = &nodes[1];
+    assert_eq!(button.events.len(), 1, "按钮应绑定一个事件");
+    assert_eq!(button.events[0].name.as_str(), "点击");
+    assert_eq!(button.events[0].body.stmts.len(), 2);
+
+    let ViewContent::Parts(parts) = &nodes[2].content else {
+        panic!("提示文本应解析为表达式绑定");
+    };
+    assert_eq!(parts.len(), 1);
+}
+
+#[test]
+fn reports_state_inside_child_node() {
+    let errors = parse_err("视图 { 容器 { 状态 { 让 甲 = 1; } } }");
+    let message = errors.to_string();
+
+    assert!(
+        message.contains("`状态` 只能写在视图根节点"),
+        "诊断：\n{message}"
+    );
+}
+
+#[test]
+fn parses_binding_attribute_expression() {
+    let program = parse_ok(
+        "视图 { 状态 { 让 可变 次数 = 0; } 段落 { 类: { 文本 }, 隐藏: { 次数 等于 0 } } }",
+    );
+    let view = view(&program);
+    let ViewContent::Children(children) = &view.content else {
+        panic!("视图根节点应包含子节点");
+    };
+    let paragraph = &children[0];
+
+    assert!(matches!(
+        paragraph.attributes[0].value.kind,
+        ViewValueKind::Expression(_)
+    ));
+    assert!(matches!(
+        paragraph.attributes[1].value.kind,
+        ViewValueKind::Expression(_)
+    ));
 }

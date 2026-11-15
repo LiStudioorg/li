@@ -1,24 +1,35 @@
-//! li 语言 `.lui` 视图文件的静态 HTML 后端。
+//! li 语言 `.lui` 视图文件的单体 HTML 后端。
 //!
 //! 后端直接消费 [`li_ast::Program`]，把 `视图 { ... }` 声明翻译为
-//! 标准 HTML5 文档。第一版只生成纯结构，不处理 CSS 文件、脚本或事件绑定；
+//! 一个**完整的 HTML5 文档**：结构、样式与交互脚本全部内联，不产生
+//! `index.html` 与 `app.js` 的分离文件，也不引用任何外部资源。
+//!
+//! - `状态 { ... }` 中的变量成为内联脚本里的顶层状态；
+//! - `文本 { 「计数：」, 次数 }` 与 `类: { 表达式 }` 注册渲染绑定；
+//! - `点击 { 次数 = 次数 加 1; }` 注册 DOM 事件监听；
+//! - 每次事件执行后自动重新渲染全部绑定。
+//!
 //! 中文标签与属性通过 [`mapping`] 中的固定表映射，也允许直接使用常见的
 //! ASCII 静态 HTML 标签名与属性名。`script`、`style` 等标签与 `on*`
-//! 事件属性会被拒绝。
+//! 事件属性仍会被拒绝，事件统一使用 `点击 { ... }` 形式声明。
 //!
 //! 所有诊断均为中文，并保留 `.lui` 源码中的行列位置。
 
 mod escape;
 mod mapping;
+mod script;
 
 use std::collections::HashSet;
 
 use li_ast::{
-    Ident, Item, Program, ViewAttribute, ViewContent, ViewDecl, ViewNode, ViewValue, ViewValueKind,
+    Ident, Item, Program, ViewAttribute, ViewContent, ViewDecl, ViewNode, ViewTextPartKind,
+    ViewValue, ViewValueKind,
 };
 use li_errors::{Diagnostic, DiagnosticBag};
 
-/// 从一个 li 程序生成完整的 HTML5 文档。
+use script::ScriptTranslator;
+
+/// 从一个 li 程序生成完整的单体 HTML5 文档。
 ///
 /// 程序中必须恰好包含一个视图声明；视图可以位于顶层，也可以位于模块内部。
 pub fn generate(program: &Program) -> Result<String, DiagnosticBag> {
@@ -46,7 +57,7 @@ pub fn generate(program: &Program) -> Result<String, DiagnosticBag> {
     generate_view(views[0])
 }
 
-/// 直接从一个视图声明生成 HTML5 文档。
+/// 直接从一个视图声明生成单体 HTML5 文档。
 pub fn generate_view(view: &ViewDecl) -> Result<String, DiagnosticBag> {
     let mut generator = Generator::new(view);
     let output = generator.generate();
@@ -73,6 +84,18 @@ fn collect_views<'a>(items: &'a [Item], views: &mut Vec<&'a ViewDecl>) {
 struct Generator<'a> {
     view: &'a ViewDecl,
     diagnostics: DiagnosticBag,
+    /// 下一个生成的节点编号。
+    next_node: usize,
+    /// 渲染函数体内的绑定代码。
+    bindings: Vec<String>,
+    /// 事件监听注册代码。
+    listeners: Vec<String>,
+    /// 状态变量声明代码。
+    state_code: String,
+    /// 状态变量名称，供绑定表达式与事件处理共享。
+    state_names: HashSet<String>,
+    /// 是否需要在产物末尾内联交互脚本。
+    interactive: bool,
 }
 
 impl<'a> Generator<'a> {
@@ -80,6 +103,12 @@ impl<'a> Generator<'a> {
         Self {
             view,
             diagnostics: DiagnosticBag::new(),
+            next_node: 0,
+            bindings: Vec::new(),
+            listeners: Vec::new(),
+            state_code: String::new(),
+            state_names: HashSet::new(),
+            interactive: false,
         }
     }
 
@@ -108,6 +137,8 @@ impl<'a> Generator<'a> {
         let title = title.unwrap_or_else(|| "li 视图".to_owned());
         let lang = lang.unwrap_or_else(|| "zh-CN".to_owned());
 
+        self.prepare_interaction();
+
         let mut writer = Writer::new();
         writer.line("<!DOCTYPE html>");
         writer.line("<!-- 本文件由 li 编译器自动生成，请勿手动编辑。 -->");
@@ -122,12 +153,27 @@ impl<'a> Generator<'a> {
             ));
         }
         writer.line(format!("<title>{}</title>", escape::text(&title)));
+        if !self.view.state.is_empty() {
+            self.interactive = true;
+            writer.open("<style>");
+            writer.line("body { font-family: system-ui, sans-serif; margin: 2rem; }");
+            writer.line("button { cursor: pointer; }");
+            writer.close("</style>");
+        }
         writer.close("</head>");
         writer.open("<body>");
 
         match &self.view.content {
             ViewContent::Empty => {}
             ViewContent::Text(text) => writer.line(escape::text(text)),
+            ViewContent::Parts(_) => {
+                // 根节点只允许结构；根层绑定没有承载元素。
+                self.diagnostics.push(
+                    Diagnostic::error("视图根节点不能直接承载文本绑定")
+                        .with_span(self.view.span)
+                        .with_note("请把表达式放进 `文本 { ... }` 或具体节点中"),
+                );
+            }
             ViewContent::Children(children) => {
                 for child in children {
                     self.render_node(&mut writer, child);
@@ -135,9 +181,51 @@ impl<'a> Generator<'a> {
             }
         }
 
+        if self.interactive {
+            self.render_script(&mut writer);
+        }
+
         writer.close("</body>");
         writer.close("</html>");
         writer.finish()
+    }
+
+    /// 生成内联交互脚本。
+    fn render_script(&mut self, writer: &mut Writer) {
+        writer.open("<script>");
+        writer.line("'use strict';");
+        writer.line("function __li_显示(值) {");
+        writer.line("    if (值 === true) return '真';");
+        writer.line("    if (值 === false) return '假';");
+        writer.line("    if (值 === null || 值 === undefined) return '空';");
+        writer.line("    return String(值);");
+        writer.line("}");
+
+        for line in self.state_code.lines() {
+            writer.line(line);
+        }
+
+        writer.line("const __li_绑定 = [];");
+        writer.line("function __li_渲染() {");
+        writer.line("    for (const 项 of __li_绑定) { 项(); }");
+        writer.line("}");
+        for binding in &self.bindings {
+            writer.line(binding);
+        }
+        for listener in &self.listeners {
+            for line in listener.lines() {
+                writer.line(line);
+            }
+        }
+        writer.line("__li_渲染();");
+        writer.close("</script>");
+    }
+
+    /// 翻译状态声明；在渲染正文之前调用一次。
+    fn prepare_interaction(&mut self) {
+        let mut translator = ScriptTranslator::new(&mut self.diagnostics);
+        self.state_code = translator.declare_state(&self.view.state);
+        self.state_names = translator.names().clone();
     }
 
     /// 渲染一个普通元素节点。
@@ -150,7 +238,17 @@ impl<'a> Generator<'a> {
         let Some(tag) = self.resolve_tag(&node.name) else {
             return;
         };
-        let attributes = self.render_attributes(&node.attributes);
+
+        let dynamic = node_requires_runtime(node);
+        let node_id = if dynamic {
+            self.interactive = true;
+            Some(self.next_node_id())
+        } else {
+            None
+        };
+
+        let attributes = self.render_attributes(&node.attributes, node_id.as_deref());
+        self.register_events(node, node_id.as_deref());
         let void = mapping::is_void_tag(&tag);
 
         match &node.content {
@@ -168,6 +266,19 @@ impl<'a> Generator<'a> {
                 } else {
                     writer.line(format!("<{tag}{attributes}>{}</{tag}>", escape::text(text)));
                 }
+            }
+            ViewContent::Parts(parts) => {
+                if void {
+                    self.error_void_content(node, &tag);
+                    writer.line(format!("<{tag}{attributes}>"));
+                    return;
+                }
+
+                let Some(node_id) = node_id else {
+                    return;
+                };
+                writer.line(format!("<{tag}{attributes}></{tag}>"));
+                self.register_text_binding(&node_id, parts);
             }
             ViewContent::Children(children) => {
                 if void {
@@ -203,12 +314,19 @@ impl<'a> Generator<'a> {
     fn render_text_node(&mut self, writer: &mut Writer, node: &ViewNode) {
         match &node.content {
             ViewContent::Text(text) => {
-                let attributes = self.render_attributes(&node.attributes);
+                let attributes = self.render_attributes(&node.attributes, None);
                 if attributes.is_empty() {
                     writer.line(escape::text(text));
                 } else {
                     writer.line(format!("<span{attributes}>{}</span>", escape::text(text)));
                 }
+            }
+            ViewContent::Parts(parts) => {
+                self.interactive = true;
+                let node_id = self.next_node_id();
+                let attributes = self.render_attributes(&node.attributes, Some(&node_id));
+                writer.line(format!("<span{attributes}></span>"));
+                self.register_text_binding(&node_id, parts);
             }
             ViewContent::Empty => {
                 self.diagnostics.push(
@@ -225,6 +343,85 @@ impl<'a> Generator<'a> {
                 );
             }
         }
+    }
+
+    /// 生成文本插值绑定。
+    fn register_text_binding(&mut self, node_id: &str, parts: &[li_ast::ViewTextPart]) {
+        let mut translator =
+            ScriptTranslator::with_names(&mut self.diagnostics, self.state_names.clone());
+        let mut pieces = Vec::new();
+
+        for part in parts {
+            match &part.kind {
+                ViewTextPartKind::Text(text) => {
+                    pieces.push(format!("\"{}\"", script::escape_js_string(text)));
+                }
+                ViewTextPartKind::Expression(expression) => {
+                    let code = translator.binding_expression(expression);
+                    pieces.push(format!(
+                        "__li_显示({})",
+                        code.unwrap_or_else(|| "''".to_owned())
+                    ));
+                }
+            }
+        }
+
+        if pieces.is_empty() {
+            pieces.push("\"\"".to_owned());
+        }
+
+        let selector = format!("[data-li-node=\"{node_id}\"]");
+        self.bindings.push(format!(
+            "__li_绑定.push(() => {{ document.querySelector('{selector}').textContent = {}; }});",
+            pieces.join(" + ")
+        ));
+    }
+
+    /// 注册节点上的全部事件监听。
+    fn register_events(&mut self, node: &ViewNode, node_id: Option<&str>) {
+        if node.events.is_empty() {
+            return;
+        }
+
+        let Some(node_id) = node_id else {
+            return;
+        };
+
+        for event in &node.events {
+            let Some(dom_event) = mapping::event(&event.name.name) else {
+                self.diagnostics.push(
+                    Diagnostic::error(format!("未知视图事件「{}」", event.name.name))
+                        .with_span(event.name.span)
+                        .with_expected("已支持的中文事件名")
+                        .with_note(mapping::EVENT_HELP),
+                );
+                continue;
+            };
+
+            let mut translator =
+                ScriptTranslator::with_names(&mut self.diagnostics, self.state_names.clone());
+            let body = translator.handler(&event.body);
+            let Some(body) = body else {
+                continue;
+            };
+
+            let selector = format!("[data-li-node=\"{node_id}\"]");
+            let indented = body
+                .lines()
+                .map(|line| format!("    {line}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            self.listeners.push(format!(
+                "document.querySelector('{selector}').addEventListener(\"{dom_event}\", function (__事件) {{\n{indented}\n    __li_渲染();\n}});"
+            ));
+        }
+    }
+
+    /// 分配一个新的节点编号。
+    fn next_node_id(&mut self) -> String {
+        let id = format!("li-n{}", self.next_node);
+        self.next_node += 1;
+        id
     }
 
     /// 把视图标签名解析为标准 HTML 标签名。
@@ -248,9 +445,16 @@ impl<'a> Generator<'a> {
     }
 
     /// 渲染节点属性，返回带前导空格的属性片段。
-    fn render_attributes(&mut self, attributes: &[ViewAttribute]) -> String {
+    ///
+    /// `node_id` 存在时，带 `{ 表达式 }` 值的属性会被注册为运行时绑定，
+    /// 而非静态输出。
+    fn render_attributes(&mut self, attributes: &[ViewAttribute], node_id: Option<&str>) -> String {
         let mut rendered = Vec::new();
         let mut seen = HashSet::new();
+
+        if let Some(node_id) = node_id {
+            rendered.push(format!(" data-li-node=\"{node_id}\""));
+        }
 
         for attribute in attributes {
             let Some((html_name, boolean)) = self.resolve_attribute(attribute) else {
@@ -259,6 +463,30 @@ impl<'a> Generator<'a> {
 
             if !seen.insert(html_name.clone()) {
                 self.error_duplicate_attribute(attribute, &html_name);
+                continue;
+            }
+
+            if let ViewValueKind::Expression(expression) = &attribute.value.kind {
+                let Some(node_id) = node_id else {
+                    self.diagnostics.push(
+                        Diagnostic::error("绑定属性缺少运行时节点")
+                            .with_span(attribute.value.span)
+                            .with_note("请把绑定属性写在普通元素或 `文本` 节点上"),
+                    );
+                    continue;
+                };
+
+                let mut translator =
+                    ScriptTranslator::with_names(&mut self.diagnostics, self.state_names.clone());
+                let Some(code) = translator.binding_expression(expression) else {
+                    continue;
+                };
+
+                self.interactive = true;
+                let selector = format!("[data-li-node=\"{node_id}\"]");
+                self.bindings.push(format!(
+                    "__li_绑定.push(() => {{ const __值 = {code}; const __元素 = document.querySelector('{selector}'); if (__值 === false || __值 === null || __值 === undefined || __值 === '') {{ __元素.removeAttribute('{html_name}'); }} else {{ __元素.setAttribute('{html_name}', __li_显示(__值)); }} }});"
+                ));
                 continue;
             }
 
@@ -310,11 +538,11 @@ impl<'a> Generator<'a> {
 
         if lower.starts_with("on") {
             self.diagnostics.push(
-                Diagnostic::error("第一版不支持事件属性")
+                Diagnostic::error("不支持 `on*` 事件属性")
                     .with_span(attribute.name.span)
-                    .with_expected("静态 HTML 属性")
+                    .with_expected("`点击 { ... }` 形式的事件块")
                     .with_actual(format!("「{}」", attribute.name.name))
-                    .with_note("事件绑定将在后续里程碑中实现"),
+                    .with_note("事件必须写成节点内的 `点击 { 语句 }`"),
             );
             return None;
         }
@@ -360,15 +588,25 @@ impl<'a> Generator<'a> {
     }
 }
 
+/// 判断节点是否需要运行时支撑（事件、绑定属性或文本插值）。
+fn node_requires_runtime(node: &ViewNode) -> bool {
+    !node.events.is_empty()
+        || node
+            .attributes
+            .iter()
+            .any(|attribute| matches!(attribute.value.kind, ViewValueKind::Expression(_)))
+        || matches!(node.content, ViewContent::Parts(_))
+}
+
 /// 如果节点是纯 `文本` 叶子，返回它的文本，供父元素内联渲染。
 fn inline_text_child(node: &ViewNode) -> Option<&str> {
-    if node.name.name != "文本" || !node.attributes.is_empty() {
+    if node.name.name != "文本" || !node.attributes.is_empty() || !node.events.is_empty() {
         return None;
     }
 
     match &node.content {
         ViewContent::Text(text) => Some(text),
-        ViewContent::Empty | ViewContent::Children(_) => None,
+        ViewContent::Empty | ViewContent::Parts(_) | ViewContent::Children(_) => None,
     }
 }
 
@@ -400,6 +638,7 @@ fn value_text(value: &ViewValue) -> String {
             }
         }
         ViewValueKind::Identifier(name) => name.clone(),
+        ViewValueKind::Expression(_) => String::new(),
     }
 }
 
@@ -411,6 +650,7 @@ fn describe_value(value: &ViewValue) -> String {
         ViewValueKind::Float(number) => format!("小数 `{number}`"),
         ViewValueKind::Bool(value) => format!("布尔值 `{}`", if *value { "真" } else { "假" }),
         ViewValueKind::Identifier(name) => format!("标识符 `{name}`"),
+        ViewValueKind::Expression(_) => "绑定表达式".to_owned(),
     }
 }
 
