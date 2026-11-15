@@ -522,3 +522,87 @@ fn serves_single_file_view_over_http() {
     let _ = child.wait();
     let _ = fs::remove_dir_all(&directory);
 }
+
+/// 创建一个带本地依赖的完整示例项目，返回项目目录。
+fn create_dependency_project(directory: &std::path::Path) -> std::path::PathBuf {
+    let library = directory.join("数学库");
+    fs::create_dir_all(&library).expect("无法创建依赖目录");
+    fs::write(
+        library.join("主.li"),
+        "函数 加法(甲: 整数, 乙: 整数) -> 整数 {\n    返回 甲 加 乙;\n}\n",
+    )
+    .expect("无法写入依赖源码");
+
+    let application = directory.join("应用");
+    fs::create_dir_all(&application).expect("无法创建项目目录");
+    fs::write(
+        application.join("li.toml"),
+        "[项目]\n名称 = \"应用\"\n版本 = \"0.1.0\"\n入口 = \"主.li\"\n\n[依赖]\n数学库 = { 路径 = \"../数学库\" }\n",
+    )
+    .expect("无法写入项目配置");
+    fs::write(
+        application.join("主.li"),
+        "导入 数学库;\n\n函数 主() -> 整数 {\n    打印(数学库.加法(1, 2));\n    返回 0;\n}\n",
+    )
+    .expect("无法写入项目源码");
+
+    application
+}
+
+#[test]
+fn fetches_dependency_then_runs_project() {
+    let directory = temp_directory("li-cli-依赖项目");
+    let application = create_dependency_project(&directory);
+
+    let fetched = Command::new(env!("CARGO_BIN_EXE_li"))
+        .arg("获取")
+        .arg(&application)
+        .output()
+        .expect("无法启动 li 编译器");
+    assert!(
+        fetched.status.success(),
+        "获取依赖失败：\n{}",
+        String::from_utf8_lossy(&fetched.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&fetched.stdout);
+    assert!(stdout.contains("已获取 1 个依赖"), "输出：{stdout}");
+    assert!(stdout.contains("依赖锁文件"), "输出：{stdout}");
+    assert!(application.join("li.lock").is_file(), "未生成 li.lock");
+    assert!(
+        application.join(".li/依赖/数学库/主.li").is_file(),
+        "未安装依赖源码"
+    );
+
+    let run = Command::new(env!("CARGO_BIN_EXE_li"))
+        .arg("运行")
+        .current_dir(&application)
+        .output()
+        .expect("无法启动 li 编译器");
+    assert!(
+        run.status.success(),
+        "运行项目失败：\n{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "3\n");
+
+    let _ = fs::remove_dir_all(&directory);
+}
+
+#[test]
+fn run_reports_missing_dependency_lock() {
+    let directory = temp_directory("li-cli-缺少锁文件");
+    let application = create_dependency_project(&directory);
+
+    let run = Command::new(env!("CARGO_BIN_EXE_li"))
+        .arg("运行")
+        .current_dir(&application)
+        .output()
+        .expect("无法启动 li 编译器");
+
+    assert!(!run.status.success(), "缺少锁文件时不应运行成功");
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(stderr.contains("缺少依赖锁文件"), "错误输出：{stderr}");
+    assert!(stderr.contains("li 获取"), "错误输出缺少建议：{stderr}");
+
+    let _ = fs::remove_dir_all(&directory);
+}

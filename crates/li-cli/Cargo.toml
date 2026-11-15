@@ -21,6 +21,7 @@ li-codegen-bytecode.workspace = true
 li-codegen-html.workspace = true
 li-codegen-llvm.workspace = true
 li-vm.workspace = true
+li-package.workspace = true
 
 [lints]
 workspace = true

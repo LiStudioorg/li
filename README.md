@@ -11,7 +11,8 @@ li 是一门面向专业开发者的通用编程语言，使用中文关键字�
 - 文本 LLVM IR 后端骨架，可生成 `.ll` 并交由 `clang` 构建原生程序；
 - 标准库基础能力：字符串、列表、字典与文件读写；
 - `不安全` 块与 `原生指针<T>`，把底层内存操作隔离在显式边界内；
-- `.lui` 视图文件与静态 HTML 后端，可把中文界面声明导出为标准 HTML5。
+- `.lui` 视图文件与静态 HTML 后端，可把中文界面声明导出为标准 HTML5；
+- 项目级配置 `li.toml`、依赖锁 `li.lock`、`li 获取` 与跨包 `导入`，支持本地路径和 Git 依赖。
 
 ## 目录结构
 
@@ -33,6 +34,7 @@ li 是一门面向专业开发者的通用编程语言，使用中文关键字�
     ├── li-codegen-html     # .lui 视图文件到静态 HTML 的后端
     ├── li-codegen-llvm     # 中立 IR 到文本 LLVM IR 的后端骨架
     ├── li-vm               # 栈式字节码虚拟机
+    ├── li-package          # 项目配置、依赖获取、锁文件与跨包链接
     └── li-cli              # 命令行入口
 ```
 
@@ -45,8 +47,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
 ```
 
-所有 crate 均采用 `MIT OR Apache-2.0` 双协议。当前测试套件包含 150+ 个用例，
-覆盖词法、语法、语义、IR 降级、字节码、VM、JavaScript、HTML、LLVM 与 CLI 端到端流程。
+所有 crate 均采用 `MIT OR Apache-2.0` 双协议。当前测试套件包含 182 个用例，
+覆盖词法、语法、语义、IR 降级、字节码、VM、JavaScript、HTML、LLVM、包管理与 CLI 端到端流程。
 
 ## 使用
 
@@ -78,6 +80,33 @@ clang -O2 示例.ll -o 示例
 ```
 
 生成 `.ll` 不依赖本机安装 LLVM；只有构建原生二进制时才需要 `clang` 或 `llc`。
+
+## 项目配置与依赖
+
+项目根目录的 `li.toml` 声明项目信息与依赖：
+
+```toml
+[项目]
+名称 = "示例"
+版本 = "0.1.0"
+入口 = "主.li"
+
+[依赖]
+数学库 = { 路径 = "../数学库" }
+网络库 = { git = "https://example.com/net.git", 版本 = "v1.0" }
+```
+
+运行 `li 获取` 会把依赖复制到 `.li/依赖/` 并生成 `li.lock`，Git 依赖会记录精确提交：
+
+```bash
+cargo run -p li-cli -- 获取
+cargo run -p li-cli -- 运行
+```
+
+主程序通过 `导入 数学库;` 使用外部包，并以 `数学库.加法(1, 2)` 调用其函数。
+包内入口优先读取它自己的 `li.toml` 中 `[项目].入口`，否则探测 `主.li`、
+`src/主.li`、`lib.li`、`src/lib.li` 等常见布局。`li 运行` 省略文件参数时，
+会从当前目录向上查找 `li.toml` 并使用项目入口；编译前会检查锁文件与依赖目录是否就绪。
 
 ## `.lui` 视图文件与 HTML 导出
 
@@ -386,3 +415,7 @@ WRAP_OPTIONAL  WRAP_RESULT  IS_SUCCESS  UNWRAP  UNWRAP_ERROR  NOP
     `li-codegen-html` 改为输出结构、样式与脚本全部内联的单体 HTML；
     新增 `li 服务`，把单体产物放在内存中直接提供 HTTP 服务，
     不再需要 `index.html` 与 `app.js` 的分离工程。
+14. **里程碑 14（已完成）**：新增 `li-package`，实现 `li.toml` 项目配置、
+    `li.lock` 依赖锁、`li 获取`（本地路径与 Git 依赖）与跨包 `导入`。
+    Git 依赖锁定精确提交；`li 运行` / `li 编译` 在编译前校验依赖就绪，
+    外部包以独立模块树链接进 AST，再进入语义检查、IR 与各后端。

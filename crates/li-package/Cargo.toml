@@ -1,0 +1,23 @@
+[package]
+name = "li-package"
+description = "li 语言的项目配置、依赖获取与模块链接"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+li-ast.workspace = true
+li-errors.workspace = true
+li-parser.workspace = true
+toml.workspace = true
+
+[dev-dependencies]
+li-codegen-bytecode.workspace = true
+li-ir.workspace = true
+li-sema.workspace = true
+li-vm.workspace = true
+
+[lints]
+workspace = true

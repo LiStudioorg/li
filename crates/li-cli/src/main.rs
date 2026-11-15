@@ -1,6 +1,8 @@
 //! li 编译器命令行入口。
 //!
-//! 提供六条主要命令：
+//! 提供以下主要命令：
+//! - `li 获取 [目录]`：解析 `li.toml`，获取依赖并生成 `li.lock`；
+//! - `li 运行 [文件.li]`：编译并直接在虚拟机中执行；
 //! - `li 编译 <文件.li>`：编译为同名 `.lic` 字节码文件；
 //! - `li 执行 <文件.lic>`：在栈式虚拟机中加载并执行字节码；
 //! - `li 编译-js <文件.li>`：编译为同名 JavaScript 文件；
@@ -8,13 +10,13 @@
 //! - `li 编译-html <文件.lui>`：把视图文件编译为同名单体 HTML 文件；
 //! - `li 服务 <文件.lui> [端口]`：编译视图并在内存中直接提供 HTTP 服务。
 //!
-//! 前端流程完全复用：语法分析 → 语义检查 → 中立 IR 降级 → 后端代码生成；
-//! HTML 后端直接消费视图 AST，不经过 IR。
+//! 前端流程完全复用：语法分析 → 依赖链接 → 语义检查 → 中立 IR 降级 →
+//! 后端代码生成；HTML 后端直接消费视图 AST，不经过 IR。
 
 use std::env;
 use std::fs;
 use std::io::ErrorKind;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
@@ -26,6 +28,32 @@ fn main() -> ExitCode {
     };
 
     match command.as_str() {
+        "获取" => {
+            if args.len() > 2 {
+                eprintln!("错误：命令「获取」最多接收一个项目目录参数");
+                print_usage();
+                return ExitCode::FAILURE;
+            }
+            let directory = args
+                .get(1)
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("."));
+            fetch_project(&directory)
+        }
+        "运行" => {
+            if args.len() > 2 {
+                eprintln!("错误：命令「运行」最多接收一个 .li 文件参数");
+                print_usage();
+                return ExitCode::FAILURE;
+            }
+            match args.get(1) {
+                Some(path) => run_source(Path::new(path)),
+                None => match default_project_entry() {
+                    Ok(entry) => run_source(&entry),
+                    Err(code) => code,
+                },
+            }
+        }
         "编译" => {
             if args.len() != 2 {
                 eprintln!("错误：命令「编译」需要一个 .li 文件参数");
@@ -105,6 +133,8 @@ fn main() -> ExitCode {
 fn print_usage() {
     println!("li 编译器 v{}", env!("CARGO_PKG_VERSION"));
     println!("用法：");
+    println!("  li 获取 [目录]         获取 li.toml 声明的依赖并生成 li.lock");
+    println!("  li 运行 [文件.li]      编译并直接运行；省略文件时使用项目入口");
     println!("  li 编译 <文件.li>      将 li 源码编译为同名 .lic 字节码文件");
     println!("  li 执行 <文件.lic>     在虚拟机中加载并执行字节码");
     println!("  li 编译-js <文件.li>   将 li 源码编译为同名 .js 文件");
@@ -119,7 +149,7 @@ fn print_usage() {
 fn compile_to_ir(input: &Path) -> Result<li_ir::Program, ExitCode> {
     if input.extension().and_then(|extension| extension.to_str()) == Some("lui") {
         eprintln!(
-            "错误：命令「编译」与「编译-js」不处理 .lui 视图文件，请改用「li 编译-html {}」",
+            "错误：可执行代码编译命令不处理 .lui 视图文件，请改用「li 编译-html {}」",
             input.display()
         );
         return Err(ExitCode::FAILURE);
@@ -150,6 +180,14 @@ fn compile_to_ir(input: &Path) -> Result<li_ir::Program, ExitCode> {
         return Err(ExitCode::FAILURE);
     }
 
+    let program = match li_package::prepare_compile(input, &program) {
+        Ok(program) => program,
+        Err(errors) => {
+            eprintln!("{errors}");
+            return Err(ExitCode::FAILURE);
+        }
+    };
+
     if let Err(errors) = li_sema::check(&program) {
         eprintln!("{errors}");
         return Err(ExitCode::FAILURE);
@@ -157,6 +195,134 @@ fn compile_to_ir(input: &Path) -> Result<li_ir::Program, ExitCode> {
 
     match li_ir::lower(&program) {
         Ok(ir) => Ok(ir),
+        Err(errors) => {
+            eprintln!("{errors}");
+            Err(ExitCode::FAILURE)
+        }
+    }
+}
+
+/// 解析 `li.toml`、获取全部依赖并写入 `li.lock`。
+fn fetch_project(directory: &Path) -> ExitCode {
+    let start = if directory.is_file() {
+        directory.parent().unwrap_or_else(|| Path::new("."))
+    } else {
+        directory
+    };
+
+    if !start.exists() {
+        eprintln!("错误：目录「{}」不存在", start.display());
+        return ExitCode::FAILURE;
+    }
+    if !start.is_dir() {
+        eprintln!("错误：「{}」不是目录", start.display());
+        return ExitCode::FAILURE;
+    }
+
+    let root = if start.join(li_package::MANIFEST_FILE).is_file() {
+        start.to_path_buf()
+    } else {
+        match li_package::find_project_root(start) {
+            Some(root) => root,
+            None => {
+                eprintln!(
+                    "错误：在「{}」及其上级目录中未找到项目配置「{}」",
+                    start.display(),
+                    li_package::MANIFEST_FILE
+                );
+                eprintln!("提示：请先在项目根目录创建 li.toml，再运行「li 获取」");
+                return ExitCode::FAILURE;
+            }
+        }
+    };
+
+    let result = match li_package::fetch(&root) {
+        Ok(result) => result,
+        Err(errors) => {
+            eprintln!("{errors}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    if result.fetched.is_empty() {
+        println!("项目未声明依赖，已生成空的依赖锁文件。");
+    } else {
+        println!("已获取 {} 个依赖：", result.fetched.len());
+        for dependency in &result.fetched {
+            match &dependency.commit {
+                Some(commit) => println!(
+                    "  {}：{}（提交 {}）",
+                    dependency.name, dependency.source, commit
+                ),
+                None => println!("  {}：{}", dependency.name, dependency.source),
+            }
+        }
+    }
+
+    println!("依赖锁文件：{}", root.join(li_package::LOCK_FILE).display());
+    ExitCode::SUCCESS
+}
+
+/// 编译 .li 源码并直接在虚拟机中执行。
+fn run_source(input: &Path) -> ExitCode {
+    if input.extension().and_then(|extension| extension.to_str()) == Some("lic") {
+        eprintln!(
+            "错误：命令「运行」需要 .li 源码文件；执行字节码请使用「li 执行 {}」",
+            input.display()
+        );
+        return ExitCode::FAILURE;
+    }
+
+    let ir = match compile_to_ir(input) {
+        Ok(ir) => ir,
+        Err(code) => return code,
+    };
+
+    let bytecode = li_codegen_bytecode::generate(&ir);
+
+    if let Err(message) = bytecode.validate() {
+        eprintln!("错误：生成的字节码校验失败：{message}");
+        return ExitCode::FAILURE;
+    }
+
+    match li_vm::execute(&bytecode) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// 在项目根目录中定位默认入口文件。
+fn default_project_entry() -> Result<PathBuf, ExitCode> {
+    let current = match env::current_dir() {
+        Ok(current) => current,
+        Err(error) => {
+            eprintln!("错误：无法读取当前目录：{}", io_error_text(&error));
+            return Err(ExitCode::FAILURE);
+        }
+    };
+
+    let Some(root) = li_package::find_project_root(&current) else {
+        eprintln!(
+            "错误：当前目录不在 li 项目中，未找到「{}」",
+            li_package::MANIFEST_FILE
+        );
+        eprintln!("提示：请传入 .li 文件，或在项目根目录创建 li.toml 后运行「li 运行」");
+        return Err(ExitCode::FAILURE);
+    };
+
+    let manifest = match li_package::Manifest::load(&root) {
+        Ok(manifest) => manifest,
+        Err(errors) => {
+            eprintln!("{errors}");
+            return Err(ExitCode::FAILURE);
+        }
+    };
+
+    match li_package::project_entry(&root, &manifest) {
+        Ok(entry) => Ok(entry),
         Err(errors) => {
             eprintln!("{errors}");
             Err(ExitCode::FAILURE)
