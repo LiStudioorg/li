@@ -36,6 +36,14 @@ li-codegen-html = { path = "crates/li-codegen-html" }
 li-codegen-llvm = { path = "crates/li-codegen-llvm" }
 li-vm = { path = "crates/li-vm" }
 
+# M12.5 内置高级标准库（宿主桥接）依赖。
+# VM 端借用这些顶级 Rust crate，JS 端映射到对应原生 API。
+base64 = "0.22.1"
+regex = "1.10"
+serde_json = "1.0"
+sha2 = "0.10"
+ureq = "2.10"
+
 # 编译器不依赖 unsafe 代码；后续若确有必要，应在局部显式豁免并说明原因。
 [workspace.lints.rust]
 unsafe_code = "forbid"

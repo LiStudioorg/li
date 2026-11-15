@@ -1251,6 +1251,134 @@ impl<'a> Vm<'a> {
             Some(BuiltinFunction::NewDictionary) => Ok(Value::Dictionary(Rc::new(RefCell::new(
                 DictionaryValue::new(),
             )))),
+            Some(BuiltinFunction::SystemTimestamp) => {
+                let seconds = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|duration| duration.as_secs() as i64)
+                    .unwrap_or(0);
+                Ok(Value::Integer(seconds))
+            }
+            Some(BuiltinFunction::SystemArguments) => {
+                let items = std::env::args()
+                    .map(|item| Value::String(item.to_owned()))
+                    .collect::<Vec<_>>();
+                Ok(Value::List(Rc::new(RefCell::new(items))))
+            }
+            Some(BuiltinFunction::SystemEnvironment) => {
+                let key = self.string_argument(name, &arguments, 0)?;
+                let value = std::env::var(&key)
+                    .ok()
+                    .map(|text| Box::new(Value::String(text)));
+                Ok(Value::Optional(value))
+            }
+            Some(BuiltinFunction::RegexMatch) => {
+                let text = self.string_argument(name, &arguments, 0)?;
+                let pattern = self.string_argument(name, &arguments, 1)?;
+                let result = match regex::Regex::new(&pattern) {
+                    Ok(re) => Ok(Value::Bool(re.is_match(&text))),
+                    Err(error) => Err(self.error(format!("无效的正则模式「{pattern}」：{error}"))),
+                };
+                result
+            }
+            Some(BuiltinFunction::RegexReplace) => {
+                let text = self.string_argument(name, &arguments, 0)?;
+                let pattern = self.string_argument(name, &arguments, 1)?;
+                let replacement = self.string_argument(name, &arguments, 2)?;
+                let result = match regex::Regex::new(&pattern) {
+                    Ok(re) => Ok(Value::String(
+                        re.replace_all(&text, replacement.as_str()).into_owned(),
+                    )),
+                    Err(error) => Err(self.error(format!("无效的正则模式「{pattern}」：{error}"))),
+                };
+                result
+            }
+            Some(BuiltinFunction::JsonParse) => {
+                let text = self.string_argument(name, &arguments, 0)?;
+                let parsed = match serde_json::from_str::<serde_json::Value>(&text) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        return Ok(Value::ResultValue(Err(Box::new(Value::String(format!(
+                            "JSON 解析失败：{error}"
+                        ))))));
+                    }
+                };
+                let serde_json::Value::Object(map) = parsed else {
+                    return Ok(Value::ResultValue(Err(Box::new(Value::String(format!(
+                        "JSON.解析 的实参必须是 JSON 对象，实际为「{text}」"
+                    ))))));
+                };
+                let pairs = map
+                    .into_iter()
+                    .map(|(key, value)| {
+                        (
+                            key,
+                            match value {
+                                serde_json::Value::String(content) => content,
+                                serde_json::Value::Null => "空".to_owned(),
+                                serde_json::Value::Bool(flag) => {
+                                    if flag {
+                                        "真".to_owned()
+                                    } else {
+                                        "假".to_owned()
+                                    }
+                                }
+                                other => other.to_string(),
+                            },
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let dictionary = self.dictionary_from_pairs(name, &text, &pairs)?;
+                Ok(Value::ResultValue(Ok(Box::new(dictionary))))
+            }
+            Some(BuiltinFunction::JsonGenerate) => {
+                let dictionary = self.dictionary_argument(name, &arguments, 0)?;
+                let mut entries = Vec::new();
+                let value = dictionary.borrow();
+                for key in &value.order {
+                    if let Some(Value::String(content)) = value.entries.get(key) {
+                        entries.push((
+                            key.display_text(),
+                            serde_json::Value::String(content.clone()),
+                        ));
+                    }
+                }
+                let object = serde_json::Map::from_iter(entries);
+                let text = serde_json::to_string(&object)
+                    .map_err(|error| self.error(format!("JSON 生成失败：{error}")))?;
+                Ok(Value::String(text))
+            }
+            Some(BuiltinFunction::NetworkGet) => {
+                let url = self.string_argument(name, &arguments, 0)?;
+                let result = match ureq::get(&url).call() {
+                    Ok(response) => match response.into_string() {
+                        Ok(body) => Value::ResultValue(Ok(Box::new(Value::String(body)))),
+                        Err(error) => Value::ResultValue(Err(Box::new(Value::String(format!(
+                            "读取响应体失败：{error}"
+                        ))))),
+                    },
+                    Err(error) => Value::ResultValue(Err(Box::new(Value::String(format!(
+                        "无法访问网址「{url}」：{error}"
+                    ))))),
+                };
+                Ok(result)
+            }
+            Some(BuiltinFunction::CryptoBase64Encode) => {
+                let text = self.string_argument(name, &arguments, 0)?;
+                let encoded = base64::Engine::encode(
+                    &base64::engine::general_purpose::STANDARD,
+                    text.as_bytes(),
+                );
+                Ok(Value::String(encoded))
+            }
+            Some(BuiltinFunction::CryptoSha256) => {
+                let text = self.string_argument(name, &arguments, 0)?;
+                use sha2::{Digest, Sha256};
+                let mut hasher = Sha256::new();
+                hasher.update(text.as_bytes());
+                let digest = hasher.finalize();
+                let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+                Ok(Value::String(hex))
+            }
             None => Err(self.error(format!("未知的内置函数「{name}」"))),
         }
     }
@@ -1294,6 +1422,45 @@ impl<'a> Vm<'a> {
             ))),
             None => Err(self.error(format!("内置调用「{name}」缺少第 {} 个实参", index + 1))),
         }
+    }
+
+    /// 从运行期字典值构造 `JSON.生成` 需要的参数。
+    fn dictionary_argument<'b>(
+        &self,
+        name: &str,
+        arguments: &'b [Value],
+        index: usize,
+    ) -> Result<&'b Rc<RefCell<DictionaryValue>>, RuntimeError> {
+        match arguments.get(index) {
+            Some(Value::Dictionary(dictionary)) => Ok(dictionary),
+            Some(other) => Err(self.error(format!(
+                "内置调用「{name}」的第 {} 个实参期望字典，实际为「{}」",
+                index + 1,
+                other.type_name()
+            ))),
+            None => Err(self.error(format!("内置调用「{name}」缺少第 {} 个实参", index + 1))),
+        }
+    }
+
+    /// 把字符串键值对写入新建字典；键值对无法解析时返回中文错误。
+    fn dictionary_from_pairs(
+        &self,
+        name: &str,
+        _source: &str,
+        pairs: &[(String, String)],
+    ) -> Result<Value, RuntimeError> {
+        let mut dictionary = DictionaryValue::new();
+        for (key, value) in pairs {
+            let key = self
+                .dictionary_key(&Value::String(key.clone()))
+                .map_err(|_| {
+                    self.error(format!(
+                        "内置调用「{name}」的 JSON 键「{key}」不是合法的字典键"
+                    ))
+                })?;
+            dictionary.insert(key, Value::String(value.clone()));
+        }
+        Ok(Value::Dictionary(Rc::new(RefCell::new(dictionary))))
     }
 
     fn dictionary_key(&self, value: &Value) -> Result<DictionaryKey, RuntimeError> {

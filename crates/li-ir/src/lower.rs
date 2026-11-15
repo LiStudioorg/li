@@ -1073,6 +1073,45 @@ impl<'a> FunctionLowerer<'a> {
         args: &[Expr],
         span: Span,
     ) -> TypedValue {
+        // 先检查 `模块.函数` 形式的内置函数调用。
+        let qualified_name = format!(
+            "{}.{}",
+            match &object.kind {
+                li_ast::ExprKind::Identifier(ident) => ident.name.as_str(),
+                _ => "",
+            },
+            field.name
+        );
+        if let Some(function) = BuiltinFunction::from_name(&qualified_name) {
+            let signature = builtin_function_signature(function);
+            let mut arguments = Vec::with_capacity(args.len());
+            for (index, argument) in args.iter().enumerate() {
+                let value = self.lower_expr(argument);
+                let value = if let Some(expected) = signature.params.get(index) {
+                    self.coerce_to_operand(value, expected, argument.span)
+                } else {
+                    value.operand
+                };
+                arguments.push(value);
+            }
+
+            let return_type = signature.return_type.clone();
+            let dest = self.new_temp();
+            self.emit(
+                Instruction::BuiltinFunctionCall {
+                    dest: dest.clone(),
+                    function,
+                    args: arguments,
+                    ty: return_type.clone(),
+                },
+                span,
+            );
+            return TypedValue {
+                operand: Operand::Place(dest),
+                ty: return_type,
+            };
+        }
+
         let receiver = self.lower_expr(object);
         let mut arguments = Vec::with_capacity(args.len());
 
@@ -1412,6 +1451,58 @@ fn builtin_function_signature(function: BuiltinFunction) -> Signature {
                 key: Box::new(IrType::Unknown),
                 value: Box::new(IrType::Unknown),
             },
+        },
+        BuiltinFunction::SystemTimestamp => Signature {
+            params: Vec::new(),
+            return_type: IrType::Integer,
+        },
+        BuiltinFunction::SystemArguments => Signature {
+            params: Vec::new(),
+            return_type: IrType::List(Box::new(IrType::String)),
+        },
+        BuiltinFunction::SystemEnvironment => Signature {
+            params: vec![IrType::String],
+            return_type: IrType::Optional(Box::new(IrType::String)),
+        },
+        BuiltinFunction::RegexMatch => Signature {
+            params: vec![IrType::String, IrType::String],
+            return_type: IrType::Bool,
+        },
+        BuiltinFunction::RegexReplace => Signature {
+            params: vec![IrType::String, IrType::String, IrType::String],
+            return_type: IrType::String,
+        },
+        BuiltinFunction::JsonParse => Signature {
+            params: vec![IrType::String],
+            return_type: IrType::Result {
+                ok: Box::new(IrType::Dictionary {
+                    key: Box::new(IrType::String),
+                    value: Box::new(IrType::String),
+                }),
+                error: Box::new(IrType::String),
+            },
+        },
+        BuiltinFunction::JsonGenerate => Signature {
+            params: vec![IrType::Dictionary {
+                key: Box::new(IrType::String),
+                value: Box::new(IrType::String),
+            }],
+            return_type: IrType::String,
+        },
+        BuiltinFunction::NetworkGet => Signature {
+            params: vec![IrType::String],
+            return_type: IrType::Result {
+                ok: Box::new(IrType::String),
+                error: Box::new(IrType::String),
+            },
+        },
+        BuiltinFunction::CryptoBase64Encode => Signature {
+            params: vec![IrType::String],
+            return_type: IrType::String,
+        },
+        BuiltinFunction::CryptoSha256 => Signature {
+            params: vec![IrType::String],
+            return_type: IrType::String,
         },
     }
 }

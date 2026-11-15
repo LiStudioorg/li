@@ -290,6 +290,26 @@ pub enum BuiltinFunction {
     WriteText,
     /// 创建一个空字典。
     NewDictionary,
+    /// 当前 Unix 时间戳（秒）。
+    SystemTimestamp,
+    /// 命令行参数列表。
+    SystemArguments,
+    /// 按键读取环境变量。
+    SystemEnvironment,
+    /// 判断字符串是否匹配正则。
+    RegexMatch,
+    /// 按正则全局替换字符串。
+    RegexReplace,
+    /// 解析 JSON 对象为字符串字典（简化版）。
+    JsonParse,
+    /// 把字符串字典生成紧凑 JSON 文本。
+    JsonGenerate,
+    /// 发起同步 HTTP GET 请求。
+    NetworkGet,
+    /// Base64 编码文本。
+    CryptoBase64Encode,
+    /// 计算文本的 SHA-256，返回小写十六进制摘要。
+    CryptoSha256,
 }
 
 impl BuiltinFunction {
@@ -299,6 +319,16 @@ impl BuiltinFunction {
             Self::ReadText => "读取文本",
             Self::WriteText => "写入文本",
             Self::NewDictionary => "新建字典",
+            Self::SystemTimestamp => "系统.时间戳",
+            Self::SystemArguments => "系统.获取参数",
+            Self::SystemEnvironment => "系统.获取环境变量",
+            Self::RegexMatch => "正则.匹配",
+            Self::RegexReplace => "正则.替换",
+            Self::JsonParse => "JSON.解析",
+            Self::JsonGenerate => "JSON.生成",
+            Self::NetworkGet => "网络.获取",
+            Self::CryptoBase64Encode => "加密.Base64编码",
+            Self::CryptoSha256 => "加密.SHA256",
         }
     }
 
@@ -308,6 +338,16 @@ impl BuiltinFunction {
             "读取文本" => Self::ReadText,
             "写入文本" => Self::WriteText,
             "新建字典" => Self::NewDictionary,
+            "系统.时间戳" => Self::SystemTimestamp,
+            "系统.获取参数" => Self::SystemArguments,
+            "系统.获取环境变量" => Self::SystemEnvironment,
+            "正则.匹配" => Self::RegexMatch,
+            "正则.替换" => Self::RegexReplace,
+            "JSON.解析" => Self::JsonParse,
+            "JSON.生成" => Self::JsonGenerate,
+            "网络.获取" => Self::NetworkGet,
+            "加密.Base64编码" => Self::CryptoBase64Encode,
+            "加密.SHA256" => Self::CryptoSha256,
             _ => return None,
         };
         Some(function)
@@ -316,9 +356,16 @@ impl BuiltinFunction {
     /// 返回实参个数。
     pub const fn arity(self) -> usize {
         match self {
-            Self::ReadText => 1,
-            Self::WriteText => 2,
-            Self::NewDictionary => 0,
+            Self::NewDictionary | Self::SystemTimestamp | Self::SystemArguments => 0,
+            Self::ReadText
+            | Self::SystemEnvironment
+            | Self::JsonParse
+            | Self::JsonGenerate
+            | Self::NetworkGet
+            | Self::CryptoSha256
+            | Self::CryptoBase64Encode => 1,
+            Self::WriteText | Self::RegexMatch => 2,
+            Self::RegexReplace => 3,
         }
     }
 }

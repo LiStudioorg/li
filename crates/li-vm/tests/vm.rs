@@ -264,3 +264,124 @@ fn stops_runaway_recursion_at_the_call_depth_limit() {
         "错误信息不符合预期：{error}"
     );
 }
+
+/// 在本地启动一次性 HTTP 服务，返回访问地址；只响应一个请求。
+fn spawn_once_http_server(body: &'static str) -> (String, std::thread::JoinHandle<()>) {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    let listener =
+        TcpListener::bind("127.0.0.1:0").unwrap_or_else(|error| panic!("无法绑定端口：{error}"));
+    let address = listener
+        .local_addr()
+        .unwrap_or_else(|error| panic!("无法读取本地地址：{error}"));
+    let handle = std::thread::spawn(move || {
+        let (mut stream, _) = listener
+            .accept()
+            .unwrap_or_else(|error| panic!("无法接受连接：{error}"));
+        let mut buffer = [0_u8; 1024];
+        let _ = stream.read(&mut buffer);
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let _ = stream.write_all(response.as_bytes());
+        let _ = stream.flush();
+    });
+
+    (format!("http://{address}/数据"), handle)
+}
+
+#[test]
+fn executes_regex_json_and_crypto_builtins() {
+    let program = compile(
+        "\
+函数 主() -> 整数 {
+    打印(正则.匹配(「li 编译器 v2」, 「li.*v[0-9]」));
+    打印(正则.替换(「abc123def456」, 「[0-9]+」, 「[数字]」));
+    打印(加密.Base64编码(「li」));
+    打印(加密.SHA256(「li」));
+
+    匹配 JSON.解析(「{\"名字\":\"li\",\"版本\":\"2.5\"}」) {
+        成功(数据) => {
+            匹配 数据.获取(「名字」) {
+                成功(名字) => { 打印(名字); },
+                失败 => { 打印(「缺名字」); },
+            }
+        },
+        失败(错误) => { 打印(错误); },
+    }
+
+    让 可变 数据表: 字典<字符串, 字符串> = 新建字典();
+    数据表 = 数据表.插入(「键」, 「值」);
+    打印(JSON.生成(数据表));
+    打印(系统.时间戳());
+    返回 0;
+}",
+    );
+
+    let output = run(&program);
+    let mut lines = output.lines();
+    assert_eq!(lines.next(), Some("真"), "正则匹配结果不正确");
+    assert_eq!(
+        lines.next(),
+        Some("abc[数字]def[数字]"),
+        "正则替换结果不正确"
+    );
+    assert_eq!(lines.next(), Some("bGk="), "Base64 编码结果不正确");
+    assert_eq!(
+        lines.next(),
+        Some("00a9e4255a5b63067b76cbfb9fd67f26bdb91be802d5ffcb177ec1b7a8d4c623"),
+        "SHA-256 摘要不正确"
+    );
+    assert_eq!(lines.next(), Some("li"), "JSON 解析结果不正确");
+    assert_eq!(lines.next(), Some("{\"键\":\"值\"}"), "JSON 生成结果不正确");
+    let timestamp = lines.next().expect("缺少时间戳输出");
+    assert!(
+        timestamp.parse::<i64>().is_ok_and(|value| value > 0),
+        "时间戳必须为正整数，实际为「{timestamp}」"
+    );
+    assert_eq!(lines.next(), None, "输出行数多于预期");
+}
+
+#[test]
+fn fetches_http_json_and_hashes_it() {
+    let body = "{\"名字\":\"li\",\"版本\":\"2.5\"}";
+    let (url, handle) = spawn_once_http_server(body);
+    let source = format!(
+        "\
+函数 主() -> 整数 {{
+    匹配 网络.获取(「{url}」) {{
+        成功(正文) => {{
+            打印(正文);
+            打印(正则.匹配(正文, 「l.」));
+            打印(加密.Base64编码(正文));
+            打印(加密.SHA256(正文));
+            匹配 JSON.解析(正文) {{
+                成功(数据) => {{
+                    匹配 数据.获取(「版本」) {{
+                        成功(版本) => {{ 打印(版本); }},
+                        失败 => {{ 打印(「缺版本」); }},
+                    }}
+                }},
+                失败(错误) => {{ 打印(错误); }},
+            }}
+        }},
+        失败(错误) => {{
+            打印(错误);
+            返回 2;
+        }},
+    }}
+    返回 0;
+}}"
+    );
+    let program = compile(&source);
+    let output = run(&program);
+    handle.join().expect("HTTP 服务线程异常");
+
+    let expected = format!(
+        "{body}\n真\neyLlkI3lrZciOiJsaSIsIueJiOacrCI6IjIuNSJ9\nb09aded8798b2c4bc15562e4ffd79ada85dc888d6de922b186141d1d3d016390\n2.5\n"
+    );
+    assert_eq!(output, expected);
+}

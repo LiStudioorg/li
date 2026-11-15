@@ -22,12 +22,18 @@ use names::{is_js_identifier, NameMangler};
 /// 可见行为一致。字典使用 `Map`，保持插入顺序。
 const RUNTIME: &str = r#"
 let __li_fs = null;
+let __li_process = null;
+let __li_http = null;
 try {
     if (typeof require === "function") {
         __li_fs = require("fs");
+        __li_process = require("process");
+        __li_http = require("http");
     }
 } catch (_) {
     __li_fs = null;
+    __li_process = null;
+    __li_http = null;
 }
 
 function __li_成功(值) {
@@ -112,6 +118,25 @@ function __li_期望列表(值, 名称) {
     return 值;
 }
 
+/// 同步发起 HTTP GET；优先使用 Node.js 的 http.get，回退到 fetch。
+function __li_同步获取(网址) {
+    if (__li_http) {
+        return new Promise((resolve, reject) => {
+            const 请求 = __li_http.get(网址, (响应) => {
+                let 内容 = "";
+                响应.on("data", (块) => { 内容 += 块; });
+                响应.on("end", () => resolve(内容));
+                请求.on("error", reject);
+            });
+            请求.on("error", reject);
+        });
+    }
+    if (typeof fetch === "function") {
+        return fetch(网址).then((响应) => 响应.text());
+    }
+    return Promise.reject(new Error("当前 JavaScript 环境不支持网络请求"));
+}
+
 function __li_期望字典(值, 名称) {
     if (!(值 instanceof Map)) {
         throw new Error("内置调用「" + 名称 + "」期望字典，实际为「" + __li_显示(值) + "」");
@@ -143,7 +168,7 @@ function __li_解析整数(文本) {
     }
 }
 
-function __li_调用内置(名称, 参数) {
+async function __li_调用内置(名称, 参数) {
     const 接收者 = 参数[0];
     switch (名称) {
         case "字符串.长度":
@@ -252,6 +277,98 @@ function __li_调用内置(名称, 参数) {
         }
         case "新建字典":
             return new Map();
+        case "系统.时间戳":
+            return Math.floor(Date.now() / 1000);
+        case "系统.获取参数":
+            if (__li_process && Array.isArray(__li_process.argv)) {
+                return __li_process.argv.slice(2);
+            }
+            return [];
+        case "系统.获取环境变量": {
+            const 键 = __li_期望字符串(参数[0], 名称);
+            if (__li_process && __li_process.env && Object.prototype.hasOwnProperty.call(__li_process.env, 键)) {
+                return __li_可选(String(__li_process.env[键]));
+            }
+            return { __li_成功: false };
+        }
+        case "正则.匹配": {
+            const 文本 = __li_期望字符串(参数[0], 名称);
+            const 模式 = __li_期望字符串(参数[1], 名称);
+            return new RegExp(模式).test(文本);
+        }
+        case "正则.替换": {
+            const 文本 = __li_期望字符串(参数[0], 名称);
+            const 模式 = __li_期望字符串(参数[1], 名称);
+            const 替换 = __li_期望字符串(参数[2], 名称);
+            return 文本.replace(new RegExp(模式, "g"), () => 替换);
+        }
+        case "JSON.解析": {
+            const 文本 = __li_期望字符串(参数[0], 名称);
+            let 对象;
+            try {
+                对象 = JSON.parse(文本);
+            } catch (错误) {
+                return __li_失败("JSON 解析失败：" + 错误.message);
+            }
+            if (对象 === null || typeof 对象 !== "object" || Array.isArray(对象)) {
+                return __li_失败("JSON.解析 的实参必须是 JSON 对象，实际为「" + 文本 + "」");
+            }
+            const 字典 = new Map();
+            for (const [键, 值] of Object.entries(对象)) {
+                字典.set(键, __li_显示(值));
+            }
+            return __li_成功(字典);
+        }
+        case "JSON.生成": {
+            const 字典 = __li_期望字典(参数[0], 名称);
+            const 对象 = {};
+            for (const [键, 值] of 字典.entries()) {
+                对象[String(键)] = 值;
+            }
+            return JSON.stringify(对象);
+        }
+        case "网络.获取": {
+            const 网址 = __li_期望字符串(参数[0], 名称);
+            if (!__li_http && typeof fetch === "undefined") {
+                return __li_失败("当前 JavaScript 环境不支持网络请求");
+            }
+            try {
+                const 内容 = await __li_同步获取(网址);
+                return __li_成功(内容);
+            } catch (错误) {
+                return __li_失败("无法访问网址「" + 网址 + "」：" + 错误.message);
+            }
+        }
+        case "加密.Base64编码": {
+            const 文本 = __li_期望字符串(参数[0], 名称);
+            if (typeof Buffer !== "undefined") {
+                return Buffer.from(文本, "utf8").toString("base64");
+            }
+            if (typeof btoa === "function" && typeof TextEncoder !== "undefined") {
+                const 字节 = new TextEncoder().encode(文本);
+                let 二进制 = "";
+                for (const 单字节 of 字节) {
+                    二进制 += String.fromCharCode(单字节);
+                }
+                return btoa(二进制);
+            }
+            throw new Error("当前 JavaScript 环境不支持 Base64 编码");
+        }
+        case "加密.SHA256": {
+            const 文本 = __li_期望字符串(参数[0], 名称);
+            if (__li_process) {
+                const 加密 = require("crypto");
+                return 加密.createHash("sha256").update(文本, "utf8").digest("hex");
+            }
+            if (typeof crypto !== "undefined" && crypto.subtle) {
+                const 字节 = new TextEncoder().encode(文本);
+                const 摘要 = await crypto.subtle.digest("SHA-256", 字节);
+                return Array.from(new Uint8Array(摘要))
+                    .map((字节) => 字节.toString(16).padStart(2, "0"))
+                    .join("");
+            }
+            throw new Error("当前 JavaScript 环境不支持 SHA-256");
+        }
         default:
             throw new Error("未知的内置方法或函数「" + 名称 + "」");
     }
@@ -327,7 +444,10 @@ impl<'a> Generator<'a> {
         {
             writer.line("");
             writer.line("// 程序入口");
-            writer.line(format!("{}();", self.function_js_name(&main.name)));
+            writer.line(format!(
+                "(async () => {{ await {}.call(null); }})();",
+                self.function_js_name(&main.name)
+            ));
         }
 
         writer.finish()
@@ -355,7 +475,7 @@ impl<'a> Generator<'a> {
             .join(", ");
 
         writer.open(format!(
-            "function {}({params}) {{",
+            "async function {}({params}) {{",
             self.function_js_name(&function.name)
         ));
 
@@ -475,7 +595,7 @@ impl<'a> Generator<'a> {
                     .map(|argument| self.operand_js_name(argument, local_names))
                     .collect::<Vec<_>>()
                     .join(", ");
-                let call = format!("{}({arguments})", self.function_js_name(function));
+                let call = format!("await {}({arguments})", self.function_js_name(function));
 
                 match dest {
                     Some(dest) => writer.line(format!(
@@ -499,7 +619,7 @@ impl<'a> Generator<'a> {
                     operands.push(self.operand_js_name(argument, local_names));
                 }
                 writer.line(format!(
-                    "{} = __li_调用内置({}, [{}]);",
+                    "{} = await __li_调用内置({}, [{}]);",
                     self.place_js_name(dest, local_names),
                     string_literal(method.qualified_name()),
                     operands.join(", ")
@@ -516,10 +636,11 @@ impl<'a> Generator<'a> {
                     .map(|argument| self.operand_js_name(argument, local_names))
                     .collect::<Vec<_>>()
                     .join(", ");
+                let call_name = function.name();
                 writer.line(format!(
-                    "{} = __li_调用内置({}, [{}]);",
+                    "{} = await __li_调用内置({}, [{}]);",
                     self.place_js_name(dest, local_names),
-                    string_literal(function.name()),
+                    string_literal(call_name),
                     operands
                 ));
             }

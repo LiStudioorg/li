@@ -28,6 +28,11 @@ impl Analyzer {
         }
     }
 
+    /// 判断名称是否为内置模块名（正则、JSON、网络、加密、系统）。
+    fn is_builtin_module_name(name: &str) -> bool {
+        matches!(name, "正则" | "JSON" | "网络" | "加密" | "系统")
+    }
+
     fn infer_identifier(&mut self, ident: &Ident) -> Ty {
         match self.symbols.lookup(&ident.name) {
             Some(variable) => {
@@ -45,6 +50,7 @@ impl Analyzer {
                 }
                 ty
             }
+            None if Self::is_builtin_module_name(&ident.name) => Ty::Error,
             None => {
                 self.diagnostics.push(
                     Diagnostic::error(format!("未定义的变量「{}」", ident.name))
@@ -266,6 +272,22 @@ impl Analyzer {
     /// 方法调用与结构体字段访问共享点号语法，因此在调用上下文中必须先
     /// 判断接收者是否为字符串或列表；可选值与结果值仍然要求先经过匹配。
     fn infer_builtin_call(&mut self, object: &Expr, field: &Ident, args: &[Expr]) -> Ty {
+        let qualified_name = format!("{}.{}", Self::object_name(object), field.name);
+        if let Some(signature) = SemaBuiltinFunction::from_qualified_name(&qualified_name) {
+            for (index, argument) in args.iter().enumerate() {
+                if let Some(expected) = signature.params.get(index) {
+                    let actual = self.infer_expr(argument);
+                    self.check_compatible(
+                        argument.span,
+                        expected,
+                        &actual,
+                        &format!("第 {} 个参数", index + 1),
+                    );
+                }
+            }
+            return signature.return_type;
+        }
+
         let receiver_ty = self.infer_expr(object);
         let receiver_ty = self.ensure_plain(object, receiver_ty);
 
@@ -290,6 +312,14 @@ impl Analyzer {
                 );
                 Ty::Error
             }
+        }
+    }
+
+    /// 返回表达式的"名称"，用于构造 `模块.函数` 形式的内置调用名。
+    fn object_name(expr: &Expr) -> String {
+        match &expr.kind {
+            ExprKind::Identifier(ident) => ident.name.clone(),
+            _ => String::new(),
         }
     }
 
@@ -651,20 +681,50 @@ enum SemaBuiltinFunction {
     ReadText,
     WriteText,
     NewDictionary,
+    SystemTimestamp,
+    SystemArguments,
+    SystemEnvironment,
+    RegexMatch,
+    RegexReplace,
+    JsonParse,
+    JsonGenerate,
+    NetworkGet,
+    CryptoBase64Encode,
+    CryptoSha256,
 }
 
 impl SemaBuiltinFunction {
+    /// 根据 `模块.函数` 形式的限定名查找内置函数签名。
+    fn from_qualified_name(name: &str) -> Option<FunctionSignature> {
+        let function = Self::from_name(name)?;
+        Some(function.signature())
+    }
+
     fn from_name(name: &str) -> Option<Self> {
         let function = match name {
             "读取文本" => Self::ReadText,
             "写入文本" => Self::WriteText,
             "新建字典" => Self::NewDictionary,
+            "系统.时间戳" => Self::SystemTimestamp,
+            "系统.获取参数" => Self::SystemArguments,
+            "系统.获取环境变量" => Self::SystemEnvironment,
+            "正则.匹配" => Self::RegexMatch,
+            "正则.替换" => Self::RegexReplace,
+            "JSON.解析" => Self::JsonParse,
+            "JSON.生成" => Self::JsonGenerate,
+            "网络.获取" => Self::NetworkGet,
+            "加密.Base64编码" => Self::CryptoBase64Encode,
+            "加密.SHA256" => Self::CryptoSha256,
             _ => return None,
         };
         Some(function)
     }
 
     fn signature(self) -> FunctionSignature {
+        let string_dict = || Ty::Dictionary {
+            key: Box::new(Ty::String),
+            value: Box::new(Ty::String),
+        };
         match self {
             Self::ReadText => FunctionSignature {
                 params: vec![Ty::String],
@@ -686,6 +746,52 @@ impl SemaBuiltinFunction {
                     key: Box::new(Ty::Error),
                     value: Box::new(Ty::Error),
                 },
+            },
+            Self::SystemTimestamp => FunctionSignature {
+                params: Vec::new(),
+                return_type: Ty::Integer,
+            },
+            Self::SystemArguments => FunctionSignature {
+                params: Vec::new(),
+                return_type: Ty::List(Box::new(Ty::String)),
+            },
+            Self::SystemEnvironment => FunctionSignature {
+                params: vec![Ty::String],
+                return_type: Ty::Optional(Box::new(Ty::String)),
+            },
+            Self::RegexMatch => FunctionSignature {
+                params: vec![Ty::String, Ty::String],
+                return_type: Ty::Bool,
+            },
+            Self::RegexReplace => FunctionSignature {
+                params: vec![Ty::String, Ty::String, Ty::String],
+                return_type: Ty::String,
+            },
+            Self::JsonParse => FunctionSignature {
+                params: vec![Ty::String],
+                return_type: Ty::Result {
+                    ok: Box::new(string_dict()),
+                    error: Box::new(Ty::String),
+                },
+            },
+            Self::JsonGenerate => FunctionSignature {
+                params: vec![string_dict()],
+                return_type: Ty::String,
+            },
+            Self::NetworkGet => FunctionSignature {
+                params: vec![Ty::String],
+                return_type: Ty::Result {
+                    ok: Box::new(Ty::String),
+                    error: Box::new(Ty::String),
+                },
+            },
+            Self::CryptoBase64Encode => FunctionSignature {
+                params: vec![Ty::String],
+                return_type: Ty::String,
+            },
+            Self::CryptoSha256 => FunctionSignature {
+                params: vec![Ty::String],
+                return_type: Ty::String,
             },
         }
     }

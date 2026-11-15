@@ -45,7 +45,7 @@ fn compiles_a_li_file_to_javascript() {
     let javascript_path = directory.join("示例.js");
     let javascript = fs::read_to_string(&javascript_path).expect("未生成 JavaScript 文件");
     assert!(javascript.contains("console.log(__li_显示(42));"));
-    assert!(javascript.contains("主();"));
+    assert!(javascript.contains("(async () => { await 主.call(null); })();"));
 
     if Command::new("node").arg("--version").output().is_ok() {
         let result = Command::new("node")
@@ -291,6 +291,130 @@ fn reports_chinese_semantic_errors_with_positions() {
         stderr.contains("不可变，不能赋值"),
         "错误信息不是预期的中文内容：{stderr}"
     );
+
+    let _ = fs::remove_dir_all(&directory);
+}
+
+/// 在本地启动一次性 HTTP 服务，返回访问地址；只响应一个请求。
+fn spawn_once_http_server(body: &'static str) -> (String, std::thread::JoinHandle<()>) {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    let listener =
+        TcpListener::bind("127.0.0.1:0").unwrap_or_else(|error| panic!("无法绑定端口：{error}"));
+    let address = listener
+        .local_addr()
+        .unwrap_or_else(|error| panic!("无法读取本地地址：{error}"));
+    let handle = std::thread::spawn(move || {
+        let (mut stream, _) = listener
+            .accept()
+            .unwrap_or_else(|error| panic!("无法接受连接：{error}"));
+        let mut buffer = [0_u8; 1024];
+        let _ = stream.read(&mut buffer);
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let _ = stream.write_all(response.as_bytes());
+        let _ = stream.flush();
+    });
+
+    (format!("http://{address}/数据"), handle)
+}
+
+#[test]
+fn runs_standard_library_pipeline_through_real_cli() {
+    let body = "{\"名字\":\"li\",\"版本\":\"2.5\"}";
+    let (url, handle) = spawn_once_http_server(body);
+    let expected = format!(
+        "{body}\n真\neyLlkI3lrZciOiJsaSIsIueJiOacrCI6IjIuNSJ9\nb09aded8798b2c4bc15562e4ffd79ada85dc888d6de922b186141d1d3d016390\n2.5\n"
+    );
+
+    let directory = temp_directory("li-cli-标准库");
+    let input = directory.join("标准库.li");
+    let source = format!(
+        "\
+函数 主() -> 整数 {{
+    匹配 网络.获取(「{url}」) {{
+        成功(正文) => {{
+            打印(正文);
+            打印(正则.匹配(正文, 「l.」));
+            打印(加密.Base64编码(正文));
+            打印(加密.SHA256(正文));
+            匹配 JSON.解析(正文) {{
+                成功(数据) => {{
+                    匹配 数据.获取(「版本」) {{
+                        成功(版本) => {{ 打印(版本); }},
+                        失败 => {{ 打印(「缺版本」); }},
+                    }}
+                }},
+                失败(错误) => {{ 打印(错误); }},
+            }}
+        }},
+        失败(错误) => {{
+            打印(错误);
+            返回 2;
+        }},
+    }}
+    返回 0;
+}}"
+    );
+    fs::write(&input, &source).expect("无法写入 li 源文件");
+
+    let compile = Command::new(env!("CARGO_BIN_EXE_li"))
+        .arg("编译")
+        .arg(&input)
+        .output()
+        .expect("无法启动 li 编译器");
+    assert!(
+        compile.status.success(),
+        "编译失败：\n{}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+
+    let execute = Command::new(env!("CARGO_BIN_EXE_li"))
+        .arg("执行")
+        .arg(directory.join("标准库.lic"))
+        .output()
+        .expect("无法启动 li 虚拟机");
+    assert!(
+        execute.status.success(),
+        "执行失败：\n{}",
+        String::from_utf8_lossy(&execute.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&execute.stdout), expected);
+    handle.join().expect("HTTP 服务线程异常");
+
+    let js_body = "{\"名字\":\"li\",\"版本\":\"2.5\"}";
+    let (js_url, js_handle) = spawn_once_http_server(js_body);
+    let js_input = directory.join("标准库-js.li");
+    fs::write(&js_input, source.replace(&url, &js_url)).expect("无法写入 li 源文件");
+
+    let js_compile = Command::new(env!("CARGO_BIN_EXE_li"))
+        .arg("编译-js")
+        .arg(&js_input)
+        .output()
+        .expect("无法启动 li 编译器");
+    assert!(
+        js_compile.status.success(),
+        "JavaScript 编译失败：\n{}",
+        String::from_utf8_lossy(&js_compile.stderr)
+    );
+
+    if Command::new("node").arg("--version").output().is_ok() {
+        let node_run = Command::new("node")
+            .arg(directory.join("标准库-js.js"))
+            .output()
+            .expect("无法启动 Node.js");
+        assert!(
+            node_run.status.success(),
+            "Node.js 执行失败：\n{}",
+            String::from_utf8_lossy(&node_run.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&node_run.stdout), expected);
+        js_handle.join().expect("HTTP 服务线程异常");
+    }
 
     let _ = fs::remove_dir_all(&directory);
 }

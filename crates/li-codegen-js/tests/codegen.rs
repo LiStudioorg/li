@@ -32,11 +32,23 @@ fn run_node(source: &str) -> Option<String> {
 
     fs::write(&path, source).expect("无法写入临时 JavaScript 文件");
     let output = Command::new("node")
+        .arg("--experimental-vm-modules")
         .arg(&path)
         .output()
         .expect("无法启动 Node.js");
     let _ = fs::remove_file(&path);
 
+    if !output.status.success() {
+        eprintln!(
+            "Node.js FAILED: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let lines: Vec<&str> = source.lines().collect();
+        eprintln!("SOURCE TAIL:");
+        for line in lines.iter().rev().take(5) {
+            eprintln!("{line}");
+        }
+    }
     assert!(
         output.status.success(),
         "Node.js 执行失败：\n{}",
@@ -52,11 +64,11 @@ fn generates_runnable_fibonacci() {
     let javascript = compile(source);
 
     assert!(
-        javascript.contains("function 斐波那契(项数)"),
+        javascript.contains("async function 斐波那契(项数)"),
         "缺少函数声明：\n{javascript}"
     );
     assert!(
-        javascript.contains("function 主()"),
+        javascript.contains("async function 主()"),
         "缺少主函数：\n{javascript}"
     );
     assert!(
@@ -64,7 +76,7 @@ fn generates_runnable_fibonacci() {
         "打印应映射为 console.log：\n{javascript}"
     );
     assert!(
-        javascript.contains("主();"),
+        javascript.contains("(async () => { await 主.call(null); })();"),
         "缺少程序入口调用：\n{javascript}"
     );
     assert!(
@@ -237,4 +249,110 @@ fn rejects_unsafe_blocks_for_javascript_target() {
         message.contains("当前目标平台不支持底层内存操作"),
         "错误信息不符合预期：{message}"
     );
+}
+
+/// 在本地启动一次性 HTTP 服务，返回访问地址；只响应一个请求。
+fn spawn_once_http_server(body: &'static str) -> (String, std::thread::JoinHandle<()>) {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    let listener =
+        TcpListener::bind("127.0.0.1:0").unwrap_or_else(|error| panic!("无法绑定端口：{error}"));
+    let address = listener
+        .local_addr()
+        .unwrap_or_else(|error| panic!("无法读取本地地址：{error}"));
+    let handle = std::thread::spawn(move || {
+        let (mut stream, _) = listener
+            .accept()
+            .unwrap_or_else(|error| panic!("无法接受连接：{error}"));
+        let mut buffer = [0_u8; 1024];
+        let _ = stream.read(&mut buffer);
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let _ = stream.write_all(response.as_bytes());
+        let _ = stream.flush();
+    });
+
+    (format!("http://{address}/数据"), handle)
+}
+
+#[test]
+fn generates_regex_json_and_crypto_builtins() {
+    let source = "\
+函数 主() -> 整数 {
+    打印(正则.匹配(「li 编译器 v2」, 「li.*v[0-9]」));
+    打印(正则.替换(「abc123def456」, 「[0-9]+」, 「[数字]」));
+    打印(加密.Base64编码(「li」));
+    打印(加密.SHA256(「li」));
+
+    匹配 JSON.解析(「{\"名字\":\"li\",\"版本\":\"2.5\"}」) {
+        成功(数据) => {
+            匹配 数据.获取(「名字」) {
+                成功(名字) => { 打印(名字); },
+                失败 => { 打印(「缺名字」); },
+            }
+        },
+        失败(错误) => { 打印(错误); },
+    }
+
+    让 可变 数据表: 字典<字符串, 字符串> = 新建字典();
+    数据表 = 数据表.插入(「键」, 「值」);
+    打印(JSON.生成(数据表));
+    返回 0;
+}";
+    let javascript = compile(source);
+
+    if let Some(output) = run_node(&javascript) {
+        assert_eq!(
+            output,
+            "真\nabc[数字]def[数字]\nbGk=\n00a9e4255a5b63067b76cbfb9fd67f26bdb91be802d5ffcb177ec1b7a8d4c623\nli\n{\"键\":\"值\"}\n"
+        );
+    }
+}
+
+#[test]
+fn generates_http_fetch_json_pipeline() {
+    let body = "{\"名字\":\"li\",\"版本\":\"2.5\"}";
+    let (url, handle) = spawn_once_http_server(body);
+    let source = format!(
+        "\
+函数 主() -> 整数 {{
+    匹配 网络.获取(「{url}」) {{
+        成功(正文) => {{
+            打印(正文);
+            打印(正则.匹配(正文, 「l.」));
+            打印(加密.Base64编码(正文));
+            打印(加密.SHA256(正文));
+            匹配 JSON.解析(正文) {{
+                成功(数据) => {{
+                    匹配 数据.获取(「版本」) {{
+                        成功(版本) => {{ 打印(版本); }},
+                        失败 => {{ 打印(「缺版本」); }},
+                    }}
+                }},
+                失败(错误) => {{ 打印(错误); }},
+            }}
+        }},
+        失败(错误) => {{
+            打印(错误);
+            返回 2;
+        }},
+    }}
+    返回 0;
+}}"
+    );
+    let javascript = compile(&source);
+
+    if let Some(output) = run_node(&javascript) {
+        handle.join().expect("HTTP 服务线程异常");
+        assert_eq!(
+            output,
+            format!(
+                "{body}\n真\neyLlkI3lrZciOiJsaSIsIueJiOacrCI6IjIuNSJ9\nb09aded8798b2c4bc15562e4ffd79ada85dc888d6de922b186141d1d3d016390\n2.5\n"
+            )
+        );
+    }
 }

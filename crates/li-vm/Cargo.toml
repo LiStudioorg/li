@@ -11,6 +11,13 @@ authors.workspace = true
 li-codegen-bytecode.workspace = true
 li-errors.workspace = true
 
+# M12.5 内置高级标准库（宿主桥接）：VM 端借用顶级 Rust crate。
+base64.workspace = true
+regex.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+ureq.workspace = true
+
 [dev-dependencies]
 li-ir.workspace = true
 li-parser.workspace = true

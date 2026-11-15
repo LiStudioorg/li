@@ -110,8 +110,21 @@ impl Parser {
                     span,
                 );
             } else if self.eat(&TokenKind::Dot) {
-                let field = self.parse_identifier("字段名称")?;
-                let span = Span::new(expression.span.start, field.span.end);
+                let token = self.peek().clone();
+                let field_name = match &token.kind {
+                    TokenKind::Identifier(name) => name.clone(),
+                    // 允许关键字作为字段名，例如 `正则.匹配`、`数据.类型`。
+                    other => match other.keyword_name() {
+                        Some(name) => name.to_owned(),
+                        None => {
+                            self.error_expected("字段名称");
+                            return None;
+                        }
+                    },
+                };
+                let _ = self.advance();
+                let field = Ident::new(field_name, token.span);
+                let span = Span::new(expression.span.start, token.span.end);
 
                 expression = Expr::new(
                     ExprKind::FieldAccess {
