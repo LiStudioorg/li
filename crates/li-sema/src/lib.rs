@@ -6,14 +6,16 @@
 //! - 不可变变量重赋值、可选类型判空、结果类型强制匹配；
 //! - 显式类型标注、函数签名与结构体字段的一致性检查。
 //!
-//! 入口函数是 [`check_with`]：传入语法分析得到的 [`li_ast::Program`] 与
-//! [`li_errors::RuleConfig`]，按配置等级（默认 `警告`）生成对应诊断；
-//! 调用方也可以直接 [`check`] 使用默认等级。
+//! **强制警告机制**：安全类检查（不可变性、内存安全等）一律产生
+//! `Warning` 诊断（黄色），编译继续；只有真正的语法错误、类型不匹配
+//! 等致命问题才产生 `Error` 拦截编译。不提供任何忽略开关。
 //!
-//! 函数/模块上方的 `@检查(...)` 注解会局部覆盖项目级配置。
+//! 入口函数是 [`check`]：传入语法分析得到的 [`li_ast::Program`]，
+//! 成功时返回 `Ok(())`（可能伴随黄色警告），失败时返回包含
+//! 全部诊断的 [`li_errors::DiagnosticBag`]。
 
 mod analyzer;
 mod symbols;
 mod ty;
 
-pub use analyzer::{check, check_with};
+pub use analyzer::check;

@@ -44,20 +44,6 @@ impl Item {
     }
 }
 
-/// 检查注解；形如 `@检查(不可变性: 报错)` 或 `@检查(内存安全: 忽略)`。
-///
-/// 注解附着在函数或模块声明的上方，由语义分析阶段消费：
-/// 该函数/模块内部的检查等级由注解覆盖。
-#[derive(Clone, Debug, PartialEq)]
-pub struct CheckAnnotation {
-    /// 规则名；例如 `不可变性`、`内存安全`、`借用检查`。
-    pub rule: Ident,
-    /// 等级；`报错`、`警告` 或 `忽略`。
-    pub level: Ident,
-    /// 整条注解在源码中的区间（从 `@` 到右括号）。
-    pub span: Span,
-}
-
 /// 模块声明。
 #[derive(Clone, Debug, PartialEq)]
 pub struct ModuleDecl {
@@ -65,8 +51,6 @@ pub struct ModuleDecl {
     pub name: Ident,
     /// 模块内部的顶层程序项。
     pub items: Vec<Item>,
-    /// 附着在模块声明上方的检查注解，按源码顺序保存。
-    pub check_annotations: Vec<CheckAnnotation>,
     /// 整个模块声明在源码中的区间。
     pub span: Span,
 }
@@ -102,8 +86,6 @@ pub struct FuncDecl {
     pub return_type: Type,
     /// 是否为异步函数；`异步 函数` 声明的函数调用后得到 `任务<T>`。
     pub is_async: bool,
-    /// 附着在函数声明上方的检查注解，按源码顺序保存。
-    pub check_annotations: Vec<CheckAnnotation>,
     /// 函数体。
     pub body: Block,
     /// 整个函数声明在源码中的区间。

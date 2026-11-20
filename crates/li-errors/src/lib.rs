@@ -23,5 +23,5 @@ pub mod diagnostic;
 pub mod source;
 
 pub use color::{is_tty, render};
-pub use diagnostic::{Diagnostic, DiagnosticBag, Rule, RuleConfig, RuleLevel, Severity};
+pub use diagnostic::{Diagnostic, DiagnosticBag, Severity};
 pub use source::{Position, SourceFile, Span};

@@ -21,8 +21,7 @@ mod view;
 pub use common::{Ident, Literal};
 pub use expr::{BinaryOp, Expr, ExprKind, UnaryOp};
 pub use item::{
-    CheckAnnotation, FieldDef, FuncDecl, ImportDecl, Item, ModuleDecl, ModulePath, Param, Program,
-    TypeDecl,
+    FieldDef, FuncDecl, ImportDecl, Item, ModuleDecl, ModulePath, Param, Program, TypeDecl,
 };
 pub use pattern::{Pattern, PatternKind};
 pub use stmt::{

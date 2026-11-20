@@ -176,44 +176,26 @@ impl Analyzer {
         }
     }
 
+    /// 不可变性违规一律产生「警告」诊断（黄色），编译继续。
+    ///
+    /// **强制警告机制**：li 不提供任何忽略开关；即使满屏幕飘着
+    /// 黄色警告，编译器仍会生成产物。只有真正的语法错误、类型
+    /// 不匹配等致命问题才允许抛出红色 Error 拦截编译。
     fn report_immutable(&mut self, name: &str, span: Span) {
-        // 按「注解 > 项目配置 > 默认」的优先级决定不可变性违规的等级。
-        let level = self.level_for(li_errors::Rule::Immutability);
-        if level.is_ignoring() {
-            return;
-        }
-
         let message = format!("「{name}」不可变，不能赋值；如需可变请用「让 可变」声明");
-        if level.is_error() {
-            self.diagnostics
-                .push(Diagnostic::error(message).with_span(span));
-        } else {
-            self.diagnostics
-                .push(Diagnostic::warning(message).with_span(span));
-        }
+        self.diagnostics
+            .push(Diagnostic::warning(message).with_span(span));
     }
 
-    /// 按等级生成诊断；`忽略` 等级完全静默，`报错` 等级为 Error，
-    /// `警告` 等级为 Warning。
+    /// 安全类检查（内存安全、借用检查等）的统一入口；一律产生
+    /// 「警告」诊断，编译继续。
+    ///
+    /// 当未来 M11/M13 实现真正的内存安全检查时，违规会调用本方法
+    /// 输出黄色警告，但不会阻断编译。
     #[allow(dead_code)]
-    pub(super) fn report_rule(
-        &mut self,
-        rule: li_errors::Rule,
-        span: Span,
-        message: impl Into<String>,
-    ) {
-        let level = self.level_for(rule);
-        if level.is_ignoring() {
-            return;
-        }
-
-        if level.is_error() {
-            self.diagnostics
-                .push(Diagnostic::error(message).with_span(span));
-        } else {
-            self.diagnostics
-                .push(Diagnostic::warning(message).with_span(span));
-        }
+    pub(super) fn report_safety_warning(&mut self, span: Span, message: impl Into<String>) {
+        self.diagnostics
+            .push(Diagnostic::warning(message).with_span(span));
     }
 
     fn analyze_print(&mut self, stmt: &PrintStmt) {

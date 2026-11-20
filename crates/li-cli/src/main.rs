@@ -225,18 +225,16 @@ fn compile_to_ir(input: &Path) -> Result<li_ir::Program, ExitCode> {
         }
     };
 
-    // 项目级 [检查] 配置；找不到 li.toml 时使用默认等级。
-    let checks = load_project_checks(input);
-
-    // 把 sema 的 Result 转换为「成功也输出警告」的分支：
-    // 即使没有错误，只要存在警告也要打印到 stderr。
-    match li_sema::check_with(&program, &checks) {
+    // 强制警告机制：li-sema 的安全类违规一律产生 Warning（黄色），
+    // 编译继续。只有真正的语法错误、类型不匹配等致命问题才产生
+    // Error 拦截编译。成功路径也要把警告打印到 stderr，让开发者看到
+    // 黄色提示，但产物（.lic / .js / .ll / 原生二进制）仍然生成。
+    match li_sema::check(&program) {
         Ok(Some(warnings)) => {
             eprintln!("{}", li_errors::render(&warnings, true));
         }
         Ok(None) => {}
         Err(errors) => {
-            // 错误路径：把全部诊断（含警告）打印到 stderr 并退出。
             eprintln!("{}", li_errors::render(&errors, true));
             return Err(ExitCode::FAILURE);
         }
@@ -248,19 +246,6 @@ fn compile_to_ir(input: &Path) -> Result<li_ir::Program, ExitCode> {
             eprintln!("{}", li_errors::render(&errors, true));
             Err(ExitCode::FAILURE)
         }
-    }
-}
-
-/// 从 `input` 所在的项目根目录读取 `li.toml` 的 `[检查]` 表；失败时返回
-/// 默认等级（所有规则为 `警告`）。
-fn load_project_checks(input: &Path) -> li_errors::RuleConfig {
-    let Some(root) = li_package::find_project_root(input) else {
-        return li_errors::RuleConfig::new();
-    };
-
-    match li_package::Manifest::load(&root) {
-        Ok(manifest) => manifest.checks,
-        Err(_) => li_errors::RuleConfig::new(),
     }
 }
 

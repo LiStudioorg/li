@@ -5,8 +5,7 @@
 //! 的诊断集合，并在语句层使用恐慌模式恢复到 `;` 或 `}` 后继续解析。
 
 use li_ast::{
-    CheckAnnotation, FieldDef, FuncDecl, Ident, ImportDecl, Item, ModuleDecl, ModulePath, Param,
-    Program, TypeDecl,
+    FieldDef, FuncDecl, Ident, ImportDecl, Item, ModuleDecl, ModulePath, Param, Program, TypeDecl,
 };
 use li_errors::{Diagnostic, DiagnosticBag, Position, Span};
 use li_lexer::{Token, TokenKind};
@@ -89,104 +88,21 @@ impl Parser {
     }
 
     fn parse_item(&mut self) -> Option<Item> {
-        let annotations = self.parse_check_annotations();
         match &self.peek().kind {
-            TokenKind::Module => self.parse_module_with(&annotations).map(Item::Module),
-            TokenKind::Import => {
-                // 导入不允许注解；非空注解直接报错并丢弃。
-                if !annotations.is_empty() {
-                    self.diagnostics.push(
-                        Diagnostic::error("`@检查` 注解不能用于导入声明")
-                            .with_span(annotations[0].span),
-                    );
-                }
-                self.parse_import().map(Item::Import)
-            }
-            TokenKind::Async => {
-                let function = self.parse_function()?;
-                let function = FuncDecl {
-                    check_annotations: annotations,
-                    ..function
-                };
-                Some(Item::Function(function))
-            }
-            TokenKind::Func => {
-                let function = self.parse_function()?;
-                let function = FuncDecl {
-                    check_annotations: annotations,
-                    ..function
-                };
-                Some(Item::Function(function))
-            }
+            TokenKind::Module => self.parse_module().map(Item::Module),
+            TokenKind::Import => self.parse_import().map(Item::Import),
+            TokenKind::Async => self.parse_function().map(Item::Function),
+            TokenKind::Func => self.parse_function().map(Item::Function),
             TokenKind::Type => self.parse_type_decl().map(Item::Type),
             TokenKind::View => self.parse_view().map(Item::View),
             _ => {
-                if !annotations.is_empty() {
-                    self.diagnostics.push(
-                        Diagnostic::error("`@检查` 注解后面必须跟函数或模块声明")
-                            .with_span(annotations[0].span),
-                    );
-                }
                 self.error_expected("`模块`、`导入`、`函数`、`异步 函数`、`类型` 或 `视图`");
                 None
             }
         }
     }
 
-    /// 解析 0 个或多个 `@检查(...)` 注解；遇到非 `@` 时立即返回。
-    ///
-    /// 注解在项之前连续出现；每条注解必须形如 `@检查(规则名: 等级)`，
-    /// 否则记录诊断并停止收集。
-    fn parse_check_annotations(&mut self) -> Vec<CheckAnnotation> {
-        let mut annotations = Vec::new();
-
-        while self.check(&TokenKind::At) {
-            let at = self.advance();
-            // 必须紧跟 `检查` 关键字。
-            let check_name = match self.parse_identifier("检查注解名称") {
-                Some(check_name) => check_name,
-                None => break,
-            };
-            if check_name.as_str() != "检查" {
-                let name = check_name.as_str();
-                self.diagnostics.push(
-                    Diagnostic::error(format!("未知注解「@{name}」，仅支持「@检查」"))
-                        .with_span(check_name.span)
-                        .with_expected("`检查`")
-                        .with_actual(format!("`{name}`")),
-                );
-                break;
-            }
-
-            if !self.eat(&TokenKind::LParen) {
-                self.error_expected("`(`");
-                break;
-            }
-            let rule = match self.parse_identifier("规则名") {
-                Some(rule) => rule,
-                None => break,
-            };
-            if !self.eat(&TokenKind::Colon) {
-                self.error_expected("`:`");
-                break;
-            }
-            let level = match self.parse_identifier("等级") {
-                Some(level) => level,
-                None => break,
-            };
-            if !self.eat(&TokenKind::RParen) {
-                self.error_expected("`)`");
-                break;
-            }
-            let span = Span::new(at.span.start, self.peek().span.start);
-
-            annotations.push(CheckAnnotation { rule, level, span });
-        }
-
-        annotations
-    }
-
-    fn parse_module_with(&mut self, annotations: &[CheckAnnotation]) -> Option<ModuleDecl> {
+    fn parse_module(&mut self) -> Option<ModuleDecl> {
         let module_token = self.advance();
         let name = self.parse_identifier("模块名称")?;
         self.expect_kind(&TokenKind::LBrace, "`{`")?;
@@ -212,7 +128,6 @@ impl Parser {
         Some(ModuleDecl {
             name,
             items,
-            check_annotations: annotations.to_vec(),
             span: Span::new(module_token.span.start, end),
         })
     }
@@ -267,7 +182,6 @@ impl Parser {
             params,
             return_type,
             is_async,
-            check_annotations: Vec::new(),
             body,
             span: Span::new(function_token.span.start, body_end),
         })

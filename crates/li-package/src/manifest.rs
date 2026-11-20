@@ -22,7 +22,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use li_errors::{Diagnostic, DiagnosticBag, Position, Rule, RuleConfig, RuleLevel, Span};
+use li_errors::{Diagnostic, DiagnosticBag, Position, Span};
 use toml::Value;
 
 use crate::toml_compat::{attach_missing_spans, quote_bare_keys};
@@ -37,8 +37,6 @@ pub struct Manifest {
     pub project: ProjectInfo,
     /// `[依赖]` 表中的依赖，保持文件中的声明顺序。
     pub dependencies: Vec<Dependency>,
-    /// `[检查]` 表中的规则等级配置；未显式声明的规则使用默认等级（`警告`）。
-    pub checks: RuleConfig,
 }
 
 /// `[项目]` 表中的信息。
@@ -144,15 +142,12 @@ impl Manifest {
             None => {}
         }
 
-        let checks = parse_checks(table, path, &mut diagnostics);
-
         if diagnostics.has_errors() {
             Err(attach_missing_spans(diagnostics, source))
         } else {
             Ok(Self {
                 project,
                 dependencies,
-                checks,
             })
         }
     }
@@ -439,68 +434,6 @@ fn value_kind(value: &Value) -> &'static str {
         Value::Array(_) => "数组",
         Value::Table(_) => "表",
     }
-}
-
-/// 解析 `[检查]` 表，返回 [`RuleConfig`]；未识别的规则名记录诊断。
-///
-/// 合法键值对形如 `不可变性 = "报错"`、`内存安全 = "警告"`、`借用检查 = "忽略"`；
-/// 值必须是 `"报错"`、`"警告"` 或 `"忽略"`（或对应的英文小写别名）。
-fn parse_checks(
-    table: &toml::map::Map<String, Value>,
-    path: &Path,
-    diagnostics: &mut DiagnosticBag,
-) -> RuleConfig {
-    let mut config = RuleConfig::new();
-
-    let Some(value) = table.get("检查") else {
-        return config;
-    };
-
-    let Some(entries) = value.as_table() else {
-        diagnostics.push(
-            Diagnostic::error("`检查` 必须是表")
-                .with_expected("形如 `[检查]` 的表")
-                .with_actual(value_kind(value))
-                .with_note(format!("文件：{}", path.display())),
-        );
-        return config;
-    };
-
-    for (name, value) in entries {
-        let Some(rule) = Rule::parse(name) else {
-            diagnostics.push(
-                Diagnostic::error(format!("未知检查规则「{name}」"))
-                    .with_expected("「不可变性」「内存安全」或「借用检查」")
-                    .with_actual(format!("`{name}`"))
-                    .with_note(format!("文件：{}", path.display())),
-            );
-            continue;
-        };
-
-        let Some(level_text) = value.as_str() else {
-            diagnostics.push(
-                Diagnostic::error(format!("检查规则「{name}」必须是字符串"))
-                    .with_expected("「报错」「警告」或「忽略」")
-                    .with_actual(value_kind(value))
-                    .with_note(format!("文件：{}", path.display())),
-            );
-            continue;
-        };
-
-        let Some(level) = RuleLevel::parse(level_text) else {
-            diagnostics.push(
-                Diagnostic::error(format!("检查规则「{name}」的等级「{level_text}」无效"))
-                    .with_expected("「报错」「警告」或「忽略」")
-                    .with_actual(format!("`{level_text}`"))
-                    .with_note(format!("文件：{}", path.display())),
-            );
-            continue;
-        };
-
-        config.set(rule, level);
-    }
-
-    config
 }
 
 /// 把输入输出错误转换为中文说明。

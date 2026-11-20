@@ -4,53 +4,44 @@
 //! 覆盖符号表作用域、类型推导、函数与结构体检查、不可变变量、
 //! 可选类型判空、结果类型强制匹配以及禁止隐式转换等规则。
 //!
-//! 检查等级（`报错` / `警告` / `忽略`）通过 [`RuleConfig`] 控制；
-//! 默认等级为「警告」。需要验证「报错」拦截的用例必须显式把
-//! 对应规则提升为 `报错`。
+//! **强制警告机制**：安全类违规（不可变性、内存安全等）一律产生
+//! `Warning` 诊断，编译继续；只有真正的语法错误、类型不匹配等
+//! 致命问题才产生 `Error` 拦截编译。测试断言必须区分两类：
+//! - `assert_ok`：编译放行（允许伴随警告）；
+//! - `assert_fatal`：编译被拦截，诊断文本里包含致命错误片段。
 
-use li_errors::{DiagnosticBag, Rule, RuleConfig, RuleLevel};
+use li_errors::DiagnosticBag;
 
-/// 解析并执行语义分析；使用项目级 [`RuleConfig`]。
-fn check(source: &str, config: &RuleConfig) -> Result<(), DiagnosticBag> {
+/// 解析并执行语义分析。
+fn run_sema(source: &str) -> Result<DiagnosticBag, DiagnosticBag> {
     let program =
         li_parser::parse_source(source).unwrap_or_else(|errors| panic!("语法分析失败：\n{errors}"));
-    match li_sema::check_with(&program, config) {
-        Ok(Some(bag)) => Err(bag),
-        Ok(None) => Ok(()),
+    match li_sema::check(&program) {
+        Ok(Some(bag)) => Ok(bag),
+        Ok(None) => Ok(DiagnosticBag::new()),
         Err(errors) => Err(errors),
     }
 }
 
-/// 默认检查配置；不可变性违规按「报错」处理（便于沿用旧的拒绝测试）。
-fn default_strict_config() -> RuleConfig {
-    let mut config = RuleConfig::new();
-    config.set(Rule::Immutability, RuleLevel::Error);
-    config
-}
-
-/// 断言源码能通过语义分析（使用默认配置，允许警告存在）。
+/// 断言源码能通过语义分析（允许伴随黄色警告）。
 fn assert_ok(source: &str) {
-    let program =
-        li_parser::parse_source(source).unwrap_or_else(|errors| panic!("语法分析失败：\n{errors}"));
-
-    match li_sema::check_with(&program, &RuleConfig::new()) {
-        Ok(Some(_warnings)) => {}
-        Ok(None) => {}
+    match run_sema(source) {
+        Ok(_) => {}
         Err(errors) => panic!("语义分析不应报错：\n{errors}"),
     }
 }
 
-/// 断言源码无法通过语义分析，并返回诊断文本（按「报错」配置）。
-fn diagnostics(source: &str) -> String {
-    match check(source, &default_strict_config()) {
-        Ok(_) => panic!("预期语义错误，但分析通过了"),
+/// 断言源码会被致命错误拦截，并返回诊断文本。
+fn assert_fatal(source: &str) -> String {
+    match run_sema(source) {
+        Ok(bag) => panic!("预期致命错误，但分析通过了；伴随警告：\n{bag}"),
         Err(errors) => errors.to_string(),
     }
 }
 
-/// 断言诊断文本包含全部片段。
+/// 断言源码的致命错误包含指定片段。
 fn assert_contains(source: &str, fragments: &[&str]) {
-    let message = diagnostics(source);
+    let message = assert_fatal(source);
 
     for fragment in fragments {
         assert!(
@@ -105,6 +96,7 @@ fn accepts_a_well_typed_program() {
 
 #[test]
 fn rejects_reassignment_of_immutable_variable() {
+    // 强制警告机制：不可变性违规产生黄色警告，编译放行。
     let source = "\
 函数 主() -> 整数 {
     让 计数 = 0;
@@ -112,10 +104,18 @@ fn rejects_reassignment_of_immutable_variable() {
     返回 计数;
 }";
 
-    assert_contains(
-        source,
-        &["「计数」不可变，不能赋值；如需可变请用「让 可变」声明"],
-    );
+    match run_sema(source) {
+        Ok(bag) => {
+            let text = bag.to_string();
+            assert!(
+                text.contains("「计数」不可变，不能赋值"),
+                "缺少黄色警告：{text}"
+            );
+            assert!(bag.has_warnings(), "不可变性违规必须产生 Warning");
+            assert!(!bag.has_errors(), "强制警告机制下不可变性违规不应拦截编译");
+        }
+        Err(errors) => panic!("编译被错误拦截：{errors}"),
+    }
 }
 
 #[test]
@@ -138,10 +138,18 @@ fn rejects_reassignment_of_immutable_parameter() {
     返回 值;
 }";
 
-    assert_contains(
-        source,
-        &["「值」不可变，不能赋值；如需可变请用「让 可变」声明"],
-    );
+    match run_sema(source) {
+        Ok(bag) => {
+            let text = bag.to_string();
+            assert!(
+                text.contains("「值」不可变，不能赋值"),
+                "缺少黄色警告：{text}"
+            );
+            assert!(bag.has_warnings());
+            assert!(!bag.has_errors());
+        }
+        Err(errors) => panic!("编译被错误拦截：{errors}"),
+    }
 }
 
 #[test]
@@ -156,10 +164,18 @@ fn rejects_immutable_field_assignment() {
     返回 0;
 }";
 
-    assert_contains(
-        source,
-        &["「用户值」不可变，不能赋值；如需可变请用「让 可变」声明"],
-    );
+    match run_sema(source) {
+        Ok(bag) => {
+            let text = bag.to_string();
+            assert!(
+                text.contains("「用户值」不可变，不能赋值"),
+                "缺少黄色警告：{text}"
+            );
+            assert!(bag.has_warnings());
+            assert!(!bag.has_errors());
+        }
+        Err(errors) => panic!("编译被错误拦截：{errors}"),
+    }
 }
 
 #[test]
