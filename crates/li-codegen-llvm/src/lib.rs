@@ -19,8 +19,18 @@ use li_ir::{
 
 /// 把中立 IR 生成为文本 LLVM IR。
 pub fn generate(program: &Program) -> Result<String, DiagnosticBag> {
+    generate_with_target(program, None)
+}
+
+/// 生成带目标三元组的文本 LLVM IR；交叉编译时写入 `target triple`，
+/// 避免 clang 因宿主默认三元组与 `--target` 不一致而给出覆盖警告。
+pub fn generate_for_target(program: &Program, target: &str) -> Result<String, DiagnosticBag> {
+    generate_with_target(program, Some(target))
+}
+
+fn generate_with_target(program: &Program, target: Option<&str>) -> Result<String, DiagnosticBag> {
     let mut generator = Generator::new();
-    let module = generator.generate(program);
+    let module = generator.generate(program, target);
 
     if generator.diagnostics.has_errors() {
         Err(generator.diagnostics)
@@ -44,7 +54,7 @@ impl Generator {
         }
     }
 
-    fn generate(&mut self, program: &Program) -> String {
+    fn generate(&mut self, program: &Program, target: Option<&str>) -> String {
         let mut functions = String::new();
 
         for function in &program.functions {
@@ -54,6 +64,11 @@ impl Generator {
         let mut output = String::new();
         output.push_str("; 本文件由 li 编译器生成，目标为文本 LLVM IR。\n");
         output.push_str("; 可使用 clang -O2 <文件.ll> -o <可执行文件> 生成原生二进制。\n\n");
+
+        if let Some(triple) = target {
+            writeln!(output, "target triple = \"{triple}\"").expect("写入字符串不会失败");
+            output.push('\n');
+        }
 
         if self.uses_printf {
             output.push_str("declare i32 @printf(ptr, ...)\n\n");
@@ -293,14 +308,12 @@ impl Generator {
             } => {
                 let mut values = Vec::with_capacity(args.len());
                 for argument in args {
-                    values.push(load_operand(
-                        self,
-                        output,
-                        argument,
-                        place_types,
-                        slots,
-                        registers,
-                    )?);
+                    // LLVM 文本 IR 要求每个实参同时携带类型，例如
+                    // `i64 %r0`；只写 `%r0` 会被 clang 判为语法错误。
+                    let argument_ty = operand_type(argument, place_types)?;
+                    let value =
+                        load_operand(self, output, argument, place_types, slots, registers)?;
+                    values.push(format!("{} {value}", llvm_type(&argument_ty)?));
                 }
                 let ret = llvm_type(ty)?;
                 let result = registers.next();

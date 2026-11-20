@@ -7,6 +7,9 @@
 //! - `li 执行 <文件.lic>`：在栈式虚拟机中加载并执行字节码；
 //! - `li 编译-js <文件.li>`：编译为同名 JavaScript 文件；
 //! - `li 编译-llvm <文件.li>`：生成同名文本 LLVM IR（`.ll`）；
+//! - `li 编译-原生 <文件.li> [--target <三元组>]`：调用外部 clang 把 `.ll`
+//!   链接为原生二进制；指定目标三元组时自动启用静态链接，用于交叉编译到
+//!   Android / Termux 等缺少 glibc 的场景。
 //! - `li 编译-html <文件.lui>`：把视图文件编译为同名单体 HTML 文件；
 //! - `li 服务 <文件.lui> [端口]`：编译视图并在内存中直接提供 HTTP 服务。
 //!
@@ -17,7 +20,7 @@ use std::env;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
+use std::process::{Command, ExitCode};
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -86,6 +89,24 @@ fn main() -> ExitCode {
             }
             compile_to_llvm(Path::new(&args[1]))
         }
+        "编译-原生" => {
+            if args.len() < 2 || args.len() > 4 {
+                eprintln!("错误：命令「编译-原生」需要一个 .li 文件参数与可选 --target 参数");
+                print_usage();
+                return ExitCode::FAILURE;
+            }
+            let target = match args.get(2) {
+                Some(flag) if flag == "--target" => match args.get(3) {
+                    Some(target) => Some(target.clone()),
+                    None => {
+                        eprintln!("错误：--target 参数缺少目标三元组");
+                        return ExitCode::FAILURE;
+                    }
+                },
+                _ => None,
+            };
+            compile_to_native(Path::new(&args[1]), target.as_deref())
+        }
         "编译-html" => {
             if args.len() != 2 {
                 eprintln!("错误：命令「编译-html」需要一个 .lui 文件参数");
@@ -139,6 +160,7 @@ fn print_usage() {
     println!("  li 执行 <文件.lic>     在虚拟机中加载并执行字节码");
     println!("  li 编译-js <文件.li>   将 li 源码编译为同名 .js 文件");
     println!("  li 编译-llvm <文件.li> 生成同名文本 LLVM IR（.ll）");
+    println!("  li 编译-原生 <文件.li> [--target t]  通过 clang 链接为原生二进制（可交叉编译 + 静态链接）");
     println!("  li 编译-html <文件.lui> 将 .lui 视图文件编译为同名 .html 文件");
     println!("  li 服务 <文件.lui> [端口] 编译单体视图并启动 HTTP 服务（默认 8080）");
     println!("  li 版本                显示版本信息");
@@ -388,6 +410,153 @@ fn compile_to_llvm(input: &Path) -> ExitCode {
 
     println!("已生成 LLVM IR：{}", output.display());
     ExitCode::SUCCESS
+}
+
+/// 把 li 源码通过 clang 链接为原生二进制；指定 `--target` 时启用静态链接
+/// 以支持交叉编译（Android / Termux / musl 等缺少 glibc 的目标）。
+fn compile_to_native(input: &Path, target: Option<&str>) -> ExitCode {
+    // Android 目标必须依赖 NDK 提供的 bionic libc 与 crt，宿主机的
+    // glibc sysroot 无法替代，因此在编译前先做一次环境预检。
+    if let Some(triple) = target {
+        if triple.contains("android") {
+            let architecture = triple.split('-').next().unwrap_or("aarch64");
+            if !android_toolchain_available(architecture) {
+                eprintln!("错误：未找到 Android NDK 工具链，无法交叉编译到「{triple}」。");
+                eprintln!("提示：请安装 Android NDK，并让 li 能找到 NDK 的 clang：");
+                eprintln!("  export ANDROID_NDK_ROOT=$HOME/android-ndk-r26d");
+                eprintln!(
+                    "  export PATH=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
+                );
+                eprintln!("若目标只是在 Termux 中运行，可改用：");
+                eprintln!("  li 编译-原生 文件.li --target aarch64-linux-gnu");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
+    let ir = match compile_to_ir(input) {
+        Ok(ir) => ir,
+        Err(code) => return code,
+    };
+
+    let llvm_ir = match target {
+        Some(triple) => li_codegen_llvm::generate_for_target(&ir, triple),
+        None => li_codegen_llvm::generate(&ir),
+    };
+    let llvm_ir = match llvm_ir {
+        Ok(llvm_ir) => llvm_ir,
+        Err(errors) => {
+            eprintln!("{errors}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let llvm_path = input.with_extension("ll");
+    if let Err(error) = fs::write(&llvm_path, llvm_ir) {
+        eprintln!(
+            "错误：无法写入文件「{}」：{}",
+            llvm_path.display(),
+            io_error_text(&error)
+        );
+        return ExitCode::FAILURE;
+    }
+
+    let executable = if target.is_some() {
+        input.with_extension(target.unwrap_or_default())
+    } else {
+        input.with_extension("")
+    };
+
+    let compiler = "clang";
+    let mut command = Command::new(compiler);
+    command
+        .arg("-O2")
+        .arg(&llvm_path)
+        .arg("-o")
+        .arg(&executable);
+
+    if let Some(triple) = target {
+        command.arg(format!("--target={triple}"));
+        for flag in cross_link_flags(triple) {
+            command.arg(flag);
+        }
+        // clang 需要显式把 sysroot 作为 `-B` 指向，避免找不到目标的 crt
+        // 与 libc；linker 选择交给 clang 通过 `-B` 中的工具目录。
+        if let Some(sysroot) = cross_sysroot_for_target(triple) {
+            command.arg(format!("-B{sysroot}bin/"));
+        }
+    }
+
+    let output = match command.output() {
+        Ok(output) => output,
+        Err(error) => {
+            eprintln!("错误：无法启动 {compiler}：{}", io_error_text(&error));
+            return ExitCode::FAILURE;
+        }
+    };
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        eprintln!("错误：{compiler} 链接失败：\n{stderr}");
+        if let Some(triple) = target {
+            eprintln!(
+                "提示：交叉编译目标「{triple}」可能需要安装对应工具链，例如：
+  sudo apt install gcc-aarch64-linux-gnu    # aarch64-linux-gnu
+  Android 目标请使用 NDK 的 clang 并设置 ANDROID_NDK_ROOT。"
+            );
+        }
+        return ExitCode::FAILURE;
+    }
+
+    let suffix = target
+        .map(|triple| format!("，目标 {triple}，静态链接"))
+        .unwrap_or_default();
+    println!("已生成原生二进制：{}{suffix}", executable.display());
+    ExitCode::SUCCESS
+}
+
+/// 为交叉编译目标挑选 sysroot（`-B` 指向的目录）；没有匹配目录时返回 None。
+fn cross_sysroot_for_target(target: &str) -> Option<&'static str> {
+    match target {
+        "aarch64-linux-gnu" => Some("/usr/aarch64-linux-gnu/"),
+        "arm-linux-gnueabihf" => Some("/usr/arm-linux-gnueabihf/"),
+        "i686-linux-gnu" | "i686-unknown-linux" => Some("/usr/i686-linux-gnu/"),
+        _ => None,
+    }
+}
+
+/// 交叉链接的固定参数；`-static` 让产物在手机 Termux 上无需依赖系统 glibc。
+///
+/// 注意：`-static-libc` 并不是 clang 的合法参数（`-static` 已经包含静态 libc），
+/// 显式传入会让 clang 直接报 `unknown argument`。
+fn cross_link_flags(_target: &str) -> Vec<String> {
+    vec!["-static".to_owned()]
+}
+
+/// 检查 Android NDK 工具链是否可用：优先看 `ANDROID_NDK_ROOT` / `ANDROID_NDK_HOME`，
+/// 其次尝试直接调用带 API 级别的 NDK clang。
+fn android_toolchain_available(architecture: &str) -> bool {
+    for variable in ["ANDROID_NDK_ROOT", "ANDROID_NDK_HOME"] {
+        if let Ok(root) = std::env::var(variable) {
+            if !root.is_empty() && Path::new(&root).is_dir() {
+                return true;
+            }
+        }
+    }
+
+    for api in ["21", "24", "26", "34"] {
+        let candidate = format!("{architecture}-linux-android{api}-clang");
+        if Command::new(&candidate)
+            .arg("--version")
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false)
+        {
+            return true;
+        }
+    }
+
+    false
 }
 
 /// 解析 `.lui` 视图文件并生成单体 HTML 文本。

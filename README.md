@@ -81,6 +81,43 @@ clang -O2 示例.ll -o 示例
 
 生成 `.ll` 不依赖本机安装 LLVM；只有构建原生二进制时才需要 `clang` 或 `llc`。
 
+也可以一步完成“生成 IR + 链接原生 ELF”：
+
+```bash
+cargo run -p li-cli -- 编译-原生 示例.li
+./示例
+```
+
+交叉编译到 ARM64 并静态链接，产物不依赖目标机的动态库：
+
+```bash
+cargo run -p li-cli -- 编译-原生 示例.li --target aarch64-linux-gnu
+file 示例.aarch64-linux-gnu
+# ELF 64-bit LSB executable, ARM aarch64, ... statically linked
+```
+
+指定 `--target` 时，li 会把目标三元组写入 LLVM 模块的 `target triple`，
+并自动追加 `-static`；未指定时使用宿主默认目标。
+
+### Termux / Android 兼容性说明
+
+`--target aarch64-linux-gnu` 生成的是 **Linux/glibc 静态 ELF**，不是 Android/bionic
+可执行文件。静态链接消除了对 `libc.so` 的运行期依赖，因此通常可以直接拷贝到
+Termux 执行；注意 `/sdcard` 一般以 `noexec` 挂载，请放在 `$HOME` 等可执行目录。
+
+两者仍有差异：bionic 与 glibc 在 NSS、`/etc/passwd`、时区数据库与部分 syscall
+包装上并不一致，依赖用户名解析、系统时区或系统 DNS 配置的程序可能需要调整。
+若需要真正的 Android 原生程序，请安装 Android NDK 并使用 Android 目标：
+
+```bash
+export ANDROID_NDK_ROOT=$HOME/android-ndk-r26d
+export PATH=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
+li 编译-原生 示例.li --target aarch64-linux-android
+```
+
+未检测到 NDK 时，`li 编译-原生` 会在调用 clang 之前给出中文指引并退出，
+而不是把 clang 的英文报错直接抛给用户。
+
 ## 项目配置与依赖
 
 项目根目录的 `li.toml` 声明项目信息与依赖：
@@ -419,3 +456,8 @@ WRAP_OPTIONAL  WRAP_RESULT  IS_SUCCESS  UNWRAP  UNWRAP_ERROR  NOP
     `li.lock` 依赖锁、`li 获取`（本地路径与 Git 依赖）与跨包 `导入`。
     Git 依赖锁定精确提交；`li 运行` / `li 编译` 在编译前校验依赖就绪，
     外部包以独立模块树链接进 AST，再进入语义检查、IR 与各后端。
+15. **里程碑 15（原生二进制，已完成）**：CLI 新增 `li 编译-原生 <文件.li>`，
+    把文本 LLVM IR 交给外部 `clang` 链接为原生 ELF；支持 `--target` 交叉编译，
+    自动写入 `target triple` 并静态链接。已验证 x86_64 本机产物可执行、
+    `aarch64-linux-gnu` 产物为 `ELF 64-bit LSB executable, ARM aarch64` 且无动态段。
+    同时修复 LLVM 后端 `call` 实参缺少类型标注、clang 无法解析生成的 IR 的问题。

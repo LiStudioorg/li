@@ -1,6 +1,9 @@
 # Rust 构建产物
 /target
 
+# 本地 Cargo 镜像配置（因环境而异，不入库）
+/.cargo/
+
 # 编辑器与系统临时文件
 **/*.rs.bk
 .idea/
