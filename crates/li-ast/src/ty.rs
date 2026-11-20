@@ -42,6 +42,8 @@ pub enum TypeKind {
     },
     /// 原生指针类型，例如 `原生指针<整数>`。
     RawPointer(Box<Type>),
+    /// 任务类型，例如 `任务<字符串>`；异步函数调用的结果。
+    Task(Box<Type>),
     /// 可选类型，例如 `可选<字符串>`。
     Optional(Box<Type>),
     /// 结果类型，例如 `结果<整数, 字符串>`。

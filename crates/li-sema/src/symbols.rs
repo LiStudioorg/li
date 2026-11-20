@@ -73,6 +73,8 @@ pub(crate) struct FunctionSignature {
     pub params: Vec<Ty>,
     /// 返回类型。
     pub return_type: Ty,
+    /// 是否为异步函数；其调用结果类型为 `任务<return_type>`。
+    pub is_async: bool,
 }
 
 /// 结构体信息。

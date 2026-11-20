@@ -39,6 +39,8 @@ pub(crate) enum Ty {
     },
     /// 原生指针类型。
     RawPointer(Box<Ty>),
+    /// 任务类型；异步函数调用的结果。
+    Task(Box<Ty>),
     /// 程序内声明的结构体类型。
     Struct(String),
     /// 类型无法确定；使用该类型时不重复报告错误。
@@ -85,6 +87,7 @@ impl fmt::Display for Ty {
             Self::Optional(inner) => write!(f, "可选<{inner}>"),
             Self::Result { ok, error } => write!(f, "结果<{ok}, {error}>"),
             Self::RawPointer(inner) => write!(f, "原生指针<{inner}>"),
+            Self::Task(inner) => write!(f, "任务<{inner}>"),
             Self::Struct(name) => f.write_str(name),
             Self::Error => f.write_str("错误类型"),
         }

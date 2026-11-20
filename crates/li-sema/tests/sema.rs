@@ -3,28 +3,47 @@
 //! 每个用例先用 `li-parser` 解析源码，再交给语义分析器检查。
 //! 覆盖符号表作用域、类型推导、函数与结构体检查、不可变变量、
 //! 可选类型判空、结果类型强制匹配以及禁止隐式转换等规则。
+//!
+//! 检查等级（`报错` / `警告` / `忽略`）通过 [`RuleConfig`] 控制；
+//! 默认等级为「警告」。需要验证「报错」拦截的用例必须显式把
+//! 对应规则提升为 `报错`。
 
-use li_errors::DiagnosticBag;
+use li_errors::{DiagnosticBag, Rule, RuleConfig, RuleLevel};
 
-/// 解析并执行语义分析。
-fn check(source: &str) -> Result<(), DiagnosticBag> {
+/// 解析并执行语义分析；使用项目级 [`RuleConfig`]。
+fn check(source: &str, config: &RuleConfig) -> Result<(), DiagnosticBag> {
     let program =
         li_parser::parse_source(source).unwrap_or_else(|errors| panic!("语法分析失败：\n{errors}"));
-    li_sema::check(&program)
+    match li_sema::check_with(&program, config) {
+        Ok(Some(bag)) => Err(bag),
+        Ok(None) => Ok(()),
+        Err(errors) => Err(errors),
+    }
 }
 
-/// 断言源码能通过语义分析。
+/// 默认检查配置；不可变性违规按「报错」处理（便于沿用旧的拒绝测试）。
+fn default_strict_config() -> RuleConfig {
+    let mut config = RuleConfig::new();
+    config.set(Rule::Immutability, RuleLevel::Error);
+    config
+}
+
+/// 断言源码能通过语义分析（使用默认配置，允许警告存在）。
 fn assert_ok(source: &str) {
-    match check(source) {
-        Ok(()) => {}
+    let program =
+        li_parser::parse_source(source).unwrap_or_else(|errors| panic!("语法分析失败：\n{errors}"));
+
+    match li_sema::check_with(&program, &RuleConfig::new()) {
+        Ok(Some(_warnings)) => {}
+        Ok(None) => {}
         Err(errors) => panic!("语义分析不应报错：\n{errors}"),
     }
 }
 
-/// 断言源码无法通过语义分析，并返回诊断文本。
+/// 断言源码无法通过语义分析，并返回诊断文本（按「报错」配置）。
 fn diagnostics(source: &str) -> String {
-    match check(source) {
-        Ok(()) => panic!("预期语义错误，但分析通过了"),
+    match check(source, &default_strict_config()) {
+        Ok(_) => panic!("预期语义错误，但分析通过了"),
         Err(errors) => errors.to_string(),
     }
 }

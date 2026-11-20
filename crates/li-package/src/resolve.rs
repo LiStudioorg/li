@@ -652,7 +652,10 @@ fn rewrite_type_decl(declaration: &mut TypeDecl, scope: &Scope) {
 /// 改写类型标注中的外部结构体名称。
 fn rewrite_type(ty: &mut Type, scope: &Scope) {
     match &mut ty.kind {
-        TypeKind::List(inner) | TypeKind::RawPointer(inner) | TypeKind::Optional(inner) => {
+        TypeKind::List(inner)
+        | TypeKind::RawPointer(inner)
+        | TypeKind::Optional(inner)
+        | TypeKind::Task(inner) => {
             rewrite_type(inner, scope);
         }
         TypeKind::Dictionary { key, value } => {
@@ -785,6 +788,7 @@ fn rewrite_expr(expr: &mut Expr, scope: &Scope, diagnostics: &mut DiagnosticBag)
             }
         }
         ExprKind::Parenthesized(inner) => rewrite_expr(inner, scope, diagnostics),
+        ExprKind::Await(inner) => rewrite_expr(inner, scope, diagnostics),
         ExprKind::Literal(_) | ExprKind::Identifier(_) | ExprKind::Input => {}
     }
 }

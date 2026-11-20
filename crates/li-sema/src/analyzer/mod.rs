@@ -7,24 +7,43 @@ mod stmt;
 
 use std::collections::{HashMap, HashSet};
 
-use li_ast::{Block, FuncDecl, Item, Literal, Program, Type, TypeDecl, TypeKind};
-use li_errors::{Diagnostic, DiagnosticBag, Span};
+use li_ast::{Block, CheckAnnotation, FuncDecl, Item, Literal, Program, Type, TypeDecl, TypeKind};
+use li_errors::{Diagnostic, DiagnosticBag, Rule, RuleConfig, RuleLevel, Span};
 
 use crate::symbols::{FunctionSignature, StructInfo, SymbolTable, Variable};
 use crate::ty::Ty;
 
-/// 对整份程序执行语义分析。
+/// 对整份程序执行语义分析；使用默认规则等级（`警告`）。
 ///
 /// 所有声明会先统一登记，因此函数可以递归调用，也可以引用后面才声明的
 /// 函数与结构体。分析过程中收集全部诊断，最后一次性返回。
 pub fn check(program: &Program) -> Result<(), DiagnosticBag> {
-    let mut analyzer = Analyzer::new();
+    match check_with(program, &RuleConfig::new()) {
+        Ok(Some(_warnings)) => Ok(()),
+        Ok(None) => Ok(()),
+        Err(errors) => Err(errors),
+    }
+}
+
+/// 按 [`RuleConfig`] 对整份程序执行语义分析；`@检查(...)` 注解会局部覆盖
+/// 项目级配置，覆盖优先级为「注解 > 项目配置 > 默认」。
+///
+/// 即使没有错误，只要有警告，也会把包含警告的 [`DiagnosticBag`] 通过
+/// 第二个返回值交给调用方；调用方可以把它打印到 stderr。
+pub fn check_with(
+    program: &Program,
+    config: &RuleConfig,
+) -> Result<Option<DiagnosticBag>, DiagnosticBag> {
+    let mut analyzer = Analyzer::new(config.clone());
     analyzer.run(program);
 
     if analyzer.diagnostics.has_errors() {
         Err(analyzer.diagnostics)
+    } else if analyzer.diagnostics.has_warnings() {
+        // 编译继续，但把警告交给 CLI 打印。
+        Ok(Some(analyzer.diagnostics))
     } else {
-        Ok(())
+        Ok(None)
     }
 }
 
@@ -44,10 +63,17 @@ struct Analyzer {
     loop_depth: usize,
     /// 当前 `不安全` 块嵌套深度。
     unsafe_depth: usize,
+    /// 当前是否处于异步函数体内；用于 `等待` 与 `网络.获取` 的类型推导。
+    current_async: bool,
+    /// 项目级检查规则配置；未声明的规则使用默认等级。
+    checks: RuleConfig,
+    /// 当前函数/模块内由 `@检查(...)` 注解覆盖的规则等级；
+    /// 嵌套作用域按 LIFO 弹出。
+    annotation_stack: Vec<HashMap<Rule, RuleLevel>>,
 }
 
 impl Analyzer {
-    fn new() -> Self {
+    fn new(checks: RuleConfig) -> Self {
         Self {
             functions: HashMap::new(),
             structs: HashMap::new(),
@@ -56,6 +82,9 @@ impl Analyzer {
             current_return: None,
             loop_depth: 0,
             unsafe_depth: 0,
+            current_async: false,
+            checks,
+            annotation_stack: Vec::new(),
         }
     }
 
@@ -135,6 +164,7 @@ impl Analyzer {
                 FunctionSignature {
                     params,
                     return_type,
+                    is_async: declaration.is_async,
                 },
             );
         }
@@ -166,6 +196,7 @@ impl Analyzer {
             }
             TypeKind::Optional(inner) => Ty::Optional(Box::new(self.resolve_type(inner))),
             TypeKind::RawPointer(inner) => Ty::RawPointer(Box::new(self.resolve_type(inner))),
+            TypeKind::Task(inner) => Ty::Task(Box::new(self.resolve_type(inner))),
             TypeKind::Result { value, error } => Ty::Result {
                 ok: Box::new(self.resolve_type(value)),
                 error: Box::new(self.resolve_type(error)),
@@ -193,7 +224,9 @@ impl Analyzer {
                 Item::Function(function) => self.analyze_function(function),
                 Item::Module(module) => {
                     self.symbols.push_scope();
+                    self.push_annotations(&module.check_annotations);
                     self.analyze_items(&module.items);
+                    self.pop_annotations();
                     self.symbols.pop_scope();
                 }
                 Item::Import(_) | Item::Type(_) | Item::View(_) => {}
@@ -235,10 +268,52 @@ impl Analyzer {
                 .declare(&param.name.name, Variable { ty, mutable: false });
         }
 
+        // 解析函数上方的 `@检查(...)` 注解；局部覆盖项目级配置。
+        self.push_annotations(&function.check_annotations);
+
         self.current_return = Some(return_type);
+        self.current_async = function.is_async;
         self.analyze_block(&function.body);
+        self.pop_annotations();
         self.symbols.pop_scope();
         self.current_return = None;
+        self.current_async = false;
+    }
+
+    /// 把函数/模块上方的 `@检查(...)` 注解压入注解栈；
+    /// 同名规则在多条注解中按“最后一条生效”处理。
+    fn push_annotations(&mut self, annotations: &[CheckAnnotation]) {
+        if annotations.is_empty() {
+            return;
+        }
+
+        let mut overrides = HashMap::new();
+        for annotation in annotations {
+            let rule = Rule::parse(&annotation.rule.name).unwrap_or(Rule::Unknown);
+            let level = RuleLevel::parse(&annotation.level.name).unwrap_or_default();
+            if level == RuleLevel::Warning {
+                // 与默认值一致，不需要写入覆盖。
+                continue;
+            }
+            overrides.insert(rule, level);
+        }
+
+        self.annotation_stack.push(overrides);
+    }
+
+    /// 弹出最近一次 `@检查(...)` 注解覆盖的作用域。
+    fn pop_annotations(&mut self) {
+        self.annotation_stack.pop();
+    }
+
+    /// 按「注解 > 项目配置 > 默认」优先级返回某条规则的等级。
+    fn level_for(&self, rule: Rule) -> RuleLevel {
+        for layer in self.annotation_stack.iter().rev() {
+            if let Some(level) = layer.get(&rule) {
+                return *level;
+            }
+        }
+        self.checks.level_of(rule)
     }
 
     /// 进入新的块作用域检查语句。

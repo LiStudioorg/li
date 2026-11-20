@@ -18,6 +18,7 @@ impl Analyzer {
             ExprKind::Literal(literal) => Self::literal_type(literal),
             ExprKind::Identifier(ident) => self.infer_identifier(ident),
             ExprKind::Input => Ty::String,
+            ExprKind::Await(inner) => self.infer_await(expr, inner),
             ExprKind::Unary { op, operand } => self.infer_unary(operand, *op),
             ExprKind::Binary { left, op, right } => self.infer_binary(left, *op, right),
             ExprKind::Call { callee, args } => self.infer_call(expr, callee, args),
@@ -25,6 +26,35 @@ impl Analyzer {
             ExprKind::Index { object, index } => self.infer_index(object, index),
             ExprKind::ListLiteral(items) => self.infer_list_literal(items),
             ExprKind::Parenthesized(inner) => self.infer_expr(inner),
+        }
+    }
+
+    /// 推导 `等待 任务` 的结果类型；`等待` 只允许出现在异步函数体内。
+    fn infer_await(&mut self, expr: &Expr, inner: &Expr) -> Ty {
+        let inner_ty = self.infer_expr(inner);
+
+        if !self.current_async {
+            self.diagnostics.push(
+                Diagnostic::error("「等待」只能用于异步函数内部")
+                    .with_span(expr.span)
+                    .with_expected("位于「异步 函数」体内部的表达式")
+                    .with_actual("同步函数体"),
+            );
+            return Ty::Error;
+        }
+
+        match inner_ty {
+            Ty::Task(inner) => *inner,
+            other => {
+                self.diagnostics.push(
+                    Diagnostic::error("「等待」只能作用于任务值")
+                        .with_span(inner.span)
+                        .with_expected("任务<类型>")
+                        .with_actual(other.to_string())
+                        .with_note("调用「异步 函数」或异步路径下的「网络.获取」得到任务"),
+                );
+                Ty::Error
+            }
         }
     }
 
@@ -264,6 +294,11 @@ impl Analyzer {
             );
         }
 
+        // 异步函数调用立即得到任务句柄。
+        if signature.is_async {
+            return Ty::Task(Box::new(signature.return_type));
+        }
+
         signature.return_type
     }
 
@@ -285,6 +320,12 @@ impl Analyzer {
                     );
                 }
             }
+
+            // 异步函数体内调用「网络.获取」时，结果包装为任务。
+            if signature.is_async && self.current_async {
+                return Ty::Task(Box::new(signature.return_type));
+            }
+
             return signature.return_type;
         }
 
@@ -732,6 +773,7 @@ impl SemaBuiltinFunction {
                     ok: Box::new(Ty::String),
                     error: Box::new(Ty::String),
                 },
+                is_async: false,
             },
             Self::WriteText => FunctionSignature {
                 params: vec![Ty::String, Ty::String],
@@ -739,6 +781,7 @@ impl SemaBuiltinFunction {
                     ok: Box::new(Ty::Integer),
                     error: Box::new(Ty::String),
                 },
+                is_async: false,
             },
             Self::NewDictionary => FunctionSignature {
                 params: Vec::new(),
@@ -746,26 +789,32 @@ impl SemaBuiltinFunction {
                     key: Box::new(Ty::Error),
                     value: Box::new(Ty::Error),
                 },
+                is_async: false,
             },
             Self::SystemTimestamp => FunctionSignature {
                 params: Vec::new(),
                 return_type: Ty::Integer,
+                is_async: false,
             },
             Self::SystemArguments => FunctionSignature {
                 params: Vec::new(),
                 return_type: Ty::List(Box::new(Ty::String)),
+                is_async: false,
             },
             Self::SystemEnvironment => FunctionSignature {
                 params: vec![Ty::String],
                 return_type: Ty::Optional(Box::new(Ty::String)),
+                is_async: false,
             },
             Self::RegexMatch => FunctionSignature {
                 params: vec![Ty::String, Ty::String],
                 return_type: Ty::Bool,
+                is_async: false,
             },
             Self::RegexReplace => FunctionSignature {
                 params: vec![Ty::String, Ty::String, Ty::String],
                 return_type: Ty::String,
+                is_async: false,
             },
             Self::JsonParse => FunctionSignature {
                 params: vec![Ty::String],
@@ -773,10 +822,12 @@ impl SemaBuiltinFunction {
                     ok: Box::new(string_dict()),
                     error: Box::new(Ty::String),
                 },
+                is_async: false,
             },
             Self::JsonGenerate => FunctionSignature {
                 params: vec![string_dict()],
                 return_type: Ty::String,
+                is_async: false,
             },
             Self::NetworkGet => FunctionSignature {
                 params: vec![Ty::String],
@@ -784,14 +835,17 @@ impl SemaBuiltinFunction {
                     ok: Box::new(Ty::String),
                     error: Box::new(Ty::String),
                 },
+                is_async: true,
             },
             Self::CryptoBase64Encode => FunctionSignature {
                 params: vec![Ty::String],
                 return_type: Ty::String,
+                is_async: false,
             },
             Self::CryptoSha256 => FunctionSignature {
                 params: vec![Ty::String],
                 return_type: Ty::String,
+                is_async: false,
             },
         }
     }

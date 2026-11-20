@@ -6,6 +6,10 @@
 //! ```text
 //! 第 3 行第 5 列：类型不匹配，期望 整数，实际 字符串
 //! ```
+//!
+//! 检查规则可以独立配置等级（`报错` / `警告` / `忽略`）；默认所有语义检查
+//! 等级为「警告」，由 `li.toml` 的 `[检查]` 表或函数/模块上的 `@检查(...)`
+//! 注解覆盖。
 
 use std::fmt;
 
@@ -36,6 +40,149 @@ impl Severity {
 impl fmt::Display for Severity {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.label())
+    }
+}
+
+/// 检查规则的等级；由 `[检查]` 表或 `@检查(...)` 注解配置。
+///
+/// 默认等级为 [`RuleLevel::Warning`]；`li.toml` 与 `@检查(...)` 注解
+/// 按「注解 > 项目配置 > 默认」的优先级覆盖。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum RuleLevel {
+    /// 报错：发现该规则时产生 Error 诊断并中断编译。
+    Error,
+    /// 警告（默认）：发现该规则时产生 Warning 诊断，编译继续。
+    #[default]
+    Warning,
+    /// 忽略：发现该规则时不产生任何诊断，静默通过。
+    Ignore,
+}
+
+impl RuleLevel {
+    /// 返回该等级对应的中文名称。
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Error => "报错",
+            Self::Warning => "警告",
+            Self::Ignore => "忽略",
+        }
+    }
+
+    /// 判断该等级是否产生 Error 诊断。
+    pub const fn is_error(self) -> bool {
+        matches!(self, Self::Error)
+    }
+
+    /// 判断该等级是否完全静默。
+    pub const fn is_ignoring(self) -> bool {
+        matches!(self, Self::Ignore)
+    }
+
+    /// 解析「报错」/「警告」/「忽略」三种中文等级名。
+    pub fn parse(text: &str) -> Option<Self> {
+        match text.trim() {
+            "报错" | "error" | "Error" => Some(Self::Error),
+            "警告" | "warning" | "Warning" => Some(Self::Warning),
+            "忽略" | "ignore" | "Ignore" => Some(Self::Ignore),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for RuleLevel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+/// 检查规则名；每条规则对应一类可配置的检查（如不可变性、内存安全）。
+///
+/// 第一版内置规则：
+/// - [`Rule::Immutability`]：不可变变量重赋值；
+/// - [`Rule::MemorySafety`]：原生指针使用（预留，M11 实现）；
+/// - [`Rule::BorrowChecking`]：借用检查（预留，M13 实现）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Rule {
+    /// 不可变变量重赋值。
+    Immutability,
+    /// 内存安全（原生指针使用约束；M11 启用）。
+    MemorySafety,
+    /// 借用检查（M13 启用）。
+    BorrowChecking,
+    /// 未知规则；由用户自定义，默认按「警告」处理。
+    Unknown,
+}
+
+impl Rule {
+    /// 返回规则对应的中文名称。
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Immutability => "不可变性",
+            Self::MemorySafety => "内存安全",
+            Self::BorrowChecking => "借用检查",
+            Self::Unknown => "未知",
+        }
+    }
+
+    /// 解析「不可变性」/「内存安全」/「借用检查」三种中文规则名。
+    pub fn parse(text: &str) -> Option<Self> {
+        match text.trim() {
+            "不可变性" | "immutable" | "Immutability" => Some(Self::Immutability),
+            "内存安全" | "memory-safety" | "MemorySafety" => Some(Self::MemorySafety),
+            "借用检查" | "borrow" | "BorrowChecking" => Some(Self::BorrowChecking),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for Rule {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+/// 规则等级配置表；`li.toml` 的 `[检查]` 表解析结果。
+///
+/// 未显式声明的规则使用 [`RuleLevel::Warning`] 作为默认。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RuleConfig {
+    levels: std::collections::HashMap<Rule, RuleLevel>,
+}
+
+impl RuleConfig {
+    /// 创建空配置；全部规则使用默认等级（`警告`）。
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 设置某条规则的等级；`忽略` 等级意味着静默通过。
+    pub fn set(&mut self, rule: Rule, level: RuleLevel) {
+        self.levels.insert(rule, level);
+    }
+
+    /// 返回某条规则的等级；未配置时返回默认的 [`RuleLevel::Warning`]。
+    pub fn level_of(&self, rule: Rule) -> RuleLevel {
+        self.levels.get(&rule).copied().unwrap_or_default()
+    }
+
+    /// 是否显式配置了某条规则。
+    pub fn has(&self, rule: Rule) -> bool {
+        self.levels.contains_key(&rule)
+    }
+
+    /// 全部显式配置的规则数量。
+    pub fn len(&self) -> usize {
+        self.levels.len()
+    }
+
+    /// 配置是否为空。
+    pub fn is_empty(&self) -> bool {
+        self.levels.is_empty()
+    }
+
+    /// 遍历全部显式配置的规则。
+    pub fn iter(&self) -> impl Iterator<Item = (&Rule, &RuleLevel)> {
+        self.levels.iter()
     }
 }
 
@@ -199,6 +346,7 @@ impl fmt::Display for Diagnostic {
                 write!(f, "{}：", self.severity)?;
             }
         } else {
+            // 缺少定位时，所有级别都显式标出，便于用户识别等级。
             write!(f, "{}：", self.severity)?;
         }
 
@@ -263,6 +411,21 @@ impl DiagnosticBag {
             .iter()
             .filter(|diagnostic| diagnostic.is_error())
             .count()
+    }
+
+    /// 返回警告级别的诊断数量。
+    pub fn warning_count(&self) -> usize {
+        self.diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.severity() == Severity::Warning)
+            .count()
+    }
+
+    /// 判断是否包含警告级别的诊断。
+    pub fn has_warnings(&self) -> bool {
+        self.diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.severity() == Severity::Warning)
     }
 
     /// 以切片形式访问全部诊断。

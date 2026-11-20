@@ -29,6 +29,8 @@ pub enum ExprKind {
     Identifier(Ident),
     /// 输入表达式 `输入`。
     Input,
+    /// 等待表达式 `等待 任务`，等待异步结果。
+    Await(Box<Expr>),
     /// 一元运算，例如 `非 条件` 或 `-甲`。
     Unary {
         /// 运算符。

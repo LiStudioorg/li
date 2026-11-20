@@ -82,6 +82,14 @@ impl Generator {
     }
 
     fn emit_function(&mut self, output: &mut String, function: &Function) {
+        if function.is_async {
+            self.report(
+                first_span(function),
+                format!("LLVM 后端暂不支持异步函数「{}」", function.name),
+            );
+            return;
+        }
+
         let return_type = match llvm_type(&function.return_type) {
             Ok(ty) => ty,
             Err(message) => {
@@ -696,6 +704,7 @@ fn destination_type(instruction: &Instruction) -> Option<(Place, &IrType)> {
         | Instruction::Copy { dest, ty, .. }
         | Instruction::Unary { dest, ty, .. }
         | Instruction::Binary { dest, ty, .. }
+        | Instruction::Await { dest, ty, .. }
         | Instruction::BuiltinCall { dest, ty, .. }
         | Instruction::BuiltinFunctionCall { dest, ty, .. }
         | Instruction::Input { dest, ty }
@@ -742,6 +751,7 @@ fn instruction_name(instruction: &Instruction) -> &'static str {
         Instruction::Unary { .. } => "一元运算",
         Instruction::Binary { .. } => "二元运算",
         Instruction::Call { .. } => "函数调用",
+        Instruction::Await { .. } => "等待",
         Instruction::BuiltinCall { .. } => "内置方法",
         Instruction::BuiltinFunctionCall { .. } => "内置函数",
         Instruction::Input { .. } => "标准输入",

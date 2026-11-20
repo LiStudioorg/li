@@ -177,12 +177,43 @@ impl Analyzer {
     }
 
     fn report_immutable(&mut self, name: &str, span: Span) {
-        self.diagnostics.push(
-            Diagnostic::error(format!(
-                "「{name}」不可变，不能赋值；如需可变请用「让 可变」声明"
-            ))
-            .with_span(span),
-        );
+        // 按「注解 > 项目配置 > 默认」的优先级决定不可变性违规的等级。
+        let level = self.level_for(li_errors::Rule::Immutability);
+        if level.is_ignoring() {
+            return;
+        }
+
+        let message = format!("「{name}」不可变，不能赋值；如需可变请用「让 可变」声明");
+        if level.is_error() {
+            self.diagnostics
+                .push(Diagnostic::error(message).with_span(span));
+        } else {
+            self.diagnostics
+                .push(Diagnostic::warning(message).with_span(span));
+        }
+    }
+
+    /// 按等级生成诊断；`忽略` 等级完全静默，`报错` 等级为 Error，
+    /// `警告` 等级为 Warning。
+    #[allow(dead_code)]
+    pub(super) fn report_rule(
+        &mut self,
+        rule: li_errors::Rule,
+        span: Span,
+        message: impl Into<String>,
+    ) {
+        let level = self.level_for(rule);
+        if level.is_ignoring() {
+            return;
+        }
+
+        if level.is_error() {
+            self.diagnostics
+                .push(Diagnostic::error(message).with_span(span));
+        } else {
+            self.diagnostics
+                .push(Diagnostic::warning(message).with_span(span));
+        }
     }
 
     fn analyze_print(&mut self, stmt: &PrintStmt) {

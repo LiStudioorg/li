@@ -94,6 +94,10 @@ pub enum TokenKind {
     ResultType,
     /// `原生指针` / `rawptr` / `ptr`。
     RawPointerType,
+    /// `任务` / `task`，异步函数调用返回的句柄类型。
+    TaskType,
+    /// `@`，检查注解的前缀符号，例如 `@检查(不可变性: 报错)`。
+    At,
     /// `通道` / `channel`，并发通道类型（当前版本仅预留）。
     ChannelType,
     /// `共享` / `shared`，共享所有权类型（当前版本仅预留）。
@@ -205,6 +209,8 @@ impl TokenKind {
             Self::OptionalType => "可选",
             Self::ResultType => "结果",
             Self::RawPointerType => "原生指针",
+            Self::TaskType => "任务",
+            Self::At => "@",
             Self::ChannelType => "通道",
             Self::SharedType => "共享",
             Self::BorrowType => "借用",
@@ -268,6 +274,8 @@ impl fmt::Display for TokenKind {
             Self::OptionalType => f.write_str("`可选`"),
             Self::ResultType => f.write_str("`结果`"),
             Self::RawPointerType => f.write_str("`原生指针`"),
+            Self::TaskType => f.write_str("`任务`"),
+            Self::At => f.write_str("`@`"),
             Self::ChannelType => f.write_str("`通道`"),
             Self::SharedType => f.write_str("`共享`"),
             Self::BorrowType => f.write_str("`借用`"),

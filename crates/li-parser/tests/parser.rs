@@ -690,7 +690,7 @@ fn recovers_from_multiple_syntax_errors() {
     assert!(message.contains("实际 `=`"), "诊断：\n{message}");
     assert!(message.contains("期望 表达式"), "诊断：\n{message}");
     assert!(
-        message.contains("期望 `模块`、`导入`、`函数`、`类型` 或 `视图`"),
+        message.contains("期望 `模块`、`导入`、`函数`、`异步 函数`、`类型` 或 `视图`"),
         "诊断：\n{message}"
     );
 }

@@ -29,6 +29,8 @@ fn builds_a_minimal_program() {
         name: Ident::new("恒等", span),
         params: vec![parameter],
         return_type: integer,
+        is_async: false,
+        check_annotations: Vec::new(),
         body,
         span,
     };

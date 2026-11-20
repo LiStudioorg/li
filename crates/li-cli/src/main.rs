@@ -168,6 +168,9 @@ fn print_usage() {
 }
 
 /// 依次执行读取、语法分析、语义检查与 IR 降级。
+///
+/// 如果文件位于 li 项目根目录，则读取 `li.toml` 的 `[检查]` 表覆盖默认等级；
+/// 函数/模块上的 `@检查(...)` 注解会进一步覆盖项目级配置。
 fn compile_to_ir(input: &Path) -> Result<li_ir::Program, ExitCode> {
     if input.extension().and_then(|extension| extension.to_str()) == Some("lui") {
         eprintln!(
@@ -192,7 +195,7 @@ fn compile_to_ir(input: &Path) -> Result<li_ir::Program, ExitCode> {
     let program = match li_parser::parse_source(&source) {
         Ok(program) => program,
         Err(errors) => {
-            eprintln!("{errors}");
+            eprintln!("{}", li_errors::render(&errors, true));
             return Err(ExitCode::FAILURE);
         }
     };
@@ -205,22 +208,47 @@ fn compile_to_ir(input: &Path) -> Result<li_ir::Program, ExitCode> {
     let program = match li_package::prepare_compile(input, &program) {
         Ok(program) => program,
         Err(errors) => {
-            eprintln!("{errors}");
+            eprintln!("{}", li_errors::render(&errors, true));
             return Err(ExitCode::FAILURE);
         }
     };
 
-    if let Err(errors) = li_sema::check(&program) {
-        eprintln!("{errors}");
-        return Err(ExitCode::FAILURE);
+    // 项目级 [检查] 配置；找不到 li.toml 时使用默认等级。
+    let checks = load_project_checks(input);
+
+    // 把 sema 的 Result 转换为「成功也输出警告」的分支：
+    // 即使没有错误，只要存在警告也要打印到 stderr。
+    match li_sema::check_with(&program, &checks) {
+        Ok(Some(warnings)) => {
+            eprintln!("{}", li_errors::render(&warnings, true));
+        }
+        Ok(None) => {}
+        Err(errors) => {
+            // 错误路径：把全部诊断（含警告）打印到 stderr 并退出。
+            eprintln!("{}", li_errors::render(&errors, true));
+            return Err(ExitCode::FAILURE);
+        }
     }
 
     match li_ir::lower(&program) {
         Ok(ir) => Ok(ir),
         Err(errors) => {
-            eprintln!("{errors}");
+            eprintln!("{}", li_errors::render(&errors, true));
             Err(ExitCode::FAILURE)
         }
+    }
+}
+
+/// 从 `input` 所在的项目根目录读取 `li.toml` 的 `[检查]` 表；失败时返回
+/// 默认等级（所有规则为 `警告`）。
+fn load_project_checks(input: &Path) -> li_errors::RuleConfig {
+    let Some(root) = li_package::find_project_root(input) else {
+        return li_errors::RuleConfig::new();
+    };
+
+    match li_package::Manifest::load(&root) {
+        Ok(manifest) => manifest.checks,
+        Err(_) => li_errors::RuleConfig::new(),
     }
 }
 

@@ -275,6 +275,12 @@ fn reports_chinese_semantic_errors_with_positions() {
         "函数 主() -> 整数 {\n    让 值 = 1;\n    值 = 2;\n    返回 值;\n}\n",
     )
     .expect("无法写入 li 源文件");
+    // 把不可变性检查提升为「报错」，使该违规真正拦截编译。
+    fs::write(
+        directory.join("li.toml"),
+        "[项目]\n名称 = \"失败\"\n\n[检查]\n不可变性 = \"报错\"\n",
+    )
+    .expect("无法写入 li.toml");
 
     let output = Command::new(env!("CARGO_BIN_EXE_li"))
         .arg("编译-js")
@@ -291,6 +297,132 @@ fn reports_chinese_semantic_errors_with_positions() {
         stderr.contains("不可变，不能赋值"),
         "错误信息不是预期的中文内容：{stderr}"
     );
+
+    let _ = fs::remove_dir_all(&directory);
+}
+
+/// 默认等级为「警告」：不可变性违规产生黄字警告但编译放行。
+#[test]
+fn default_immutability_violation_is_yellow_warning() {
+    let directory = temp_directory("li-cli-警告");
+    let input = directory.join("默认.li");
+    fs::write(
+        &input,
+        "函数 主() -> 整数 {\n    让 值 = 1;\n    值 = 2;\n    返回 值;\n}\n",
+    )
+    .expect("无法写入 li 源文件");
+    // 故意不放 li.toml，让 [检查] 表缺省，默认等级即「警告」。
+    let output = Command::new(env!("CARGO_BIN_EXE_li"))
+        .arg("编译-js")
+        .arg(&input)
+        .output()
+        .expect("无法启动 li 编译器");
+
+    // 默认等级为警告，编译必须成功。
+    assert!(
+        output.status.success(),
+        "默认等级下编译不应失败：\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("不可变，不能赋值"),
+        "警告应出现在 stderr：{stderr}"
+    );
+
+    let _ = fs::remove_dir_all(&directory);
+}
+
+/// 项目级 `li.toml` 把不可变性提升为「报错」：红色拦截编译。
+#[test]
+fn toml_check_can_promote_immutability_to_error() {
+    let directory = temp_directory("li-cli-报错");
+    let input = directory.join("报错.li");
+    fs::write(
+        &input,
+        "函数 主() -> 整数 {\n    让 值 = 1;\n    值 = 2;\n    返回 值;\n}\n",
+    )
+    .expect("无法写入 li 源文件");
+    fs::write(
+        directory.join("li.toml"),
+        "[项目]\n名称 = \"报错\"\n\n[检查]\n不可变性 = \"报错\"\n",
+    )
+    .expect("无法写入 li.toml");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_li"))
+        .arg("编译-js")
+        .arg(&input)
+        .output()
+        .expect("无法启动 li 编译器");
+
+    assert!(
+        !output.status.success(),
+        "把不可变性提升为报错后，编译必须被拦截"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("不可变，不能赋值"), "诊断：{stderr}");
+    // 错误级别在 stderr 中通常以 ANSI 红色序列或“错误”标签呈现；
+    // 这里只确认诊断被拦截且包含「不可变」关键字。
+
+    let _ = fs::remove_dir_all(&directory);
+}
+
+/// 函数级 `@检查(不可变性: 忽略)` 注解完全静默；编译无提示。
+#[test]
+fn annotation_can_silence_immutability() {
+    let directory = temp_directory("li-cli-忽略");
+    let input = directory.join("忽略.li");
+    fs::write(
+        &input,
+        "@检查(不可变性: 忽略)\n函数 主() -> 整数 {\n    让 值 = 1;\n    值 = 2;\n    返回 值;\n}\n",
+    )
+    .expect("无法写入 li 源文件");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_li"))
+        .arg("编译-js")
+        .arg(&input)
+        .output()
+        .expect("无法启动 li 编译器");
+
+    assert!(
+        output.status.success(),
+        "忽略等级下编译必须放行：\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("不可变"),
+        "忽略等级下不应出现任何提示：{stderr}"
+    );
+
+    let _ = fs::remove_dir_all(&directory);
+}
+
+/// 函数级 `@检查(不可变性: 报错)` 注解把违规提升为红色拦截。
+#[test]
+fn annotation_can_promote_immutability_to_error() {
+    let directory = temp_directory("li-cli-注解报错");
+    let input = directory.join("注解.li");
+    fs::write(
+        &input,
+        "@检查(不可变性: 报错)\n函数 主() -> 整数 {\n    让 值 = 1;\n    值 = 2;\n    返回 值;\n}\n",
+    )
+    .expect("无法写入 li 源文件");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_li"))
+        .arg("编译-js")
+        .arg(&input)
+        .output()
+        .expect("无法启动 li 编译器");
+
+    assert!(!output.status.success(), "注解提升为报错后，编译必须被拦截");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("不可变，不能赋值"), "诊断：{stderr}");
+    // 错误级别在 stderr 中通常以 ANSI 红色序列或“错误”标签呈现；
+    // 这里只确认诊断被拦截且包含「不可变」关键字。
 
     let _ = fs::remove_dir_all(&directory);
 }

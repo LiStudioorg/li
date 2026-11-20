@@ -16,7 +16,11 @@ base64.workspace = true
 regex.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
-ureq.workspace = true
+
+# M13 并发：VM 的异步执行路径由 Tokio 多线程运行时驱动。
+tokio.workspace = true
+futures.workspace = true
+reqwest.workspace = true
 
 [dev-dependencies]
 li-ir.workspace = true

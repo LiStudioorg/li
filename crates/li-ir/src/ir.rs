@@ -33,6 +33,8 @@ pub enum IrType {
     },
     /// 原生指针类型。
     RawPointer(Box<IrType>),
+    /// 任务类型，异步函数调用返回的句柄。
+    Task(Box<IrType>),
     /// 可选类型。
     Optional(Box<IrType>),
     /// 结果类型。
@@ -109,6 +111,7 @@ impl fmt::Display for IrType {
             Self::List(element) => write!(f, "列表<{element}>"),
             Self::Dictionary { key, value } => write!(f, "字典<{key}, {value}>"),
             Self::RawPointer(inner) => write!(f, "原生指针<{inner}>"),
+            Self::Task(inner) => write!(f, "任务<{inner}>"),
             Self::Optional(inner) => write!(f, "可选<{inner}>"),
             Self::Result { ok, error } => write!(f, "结果<{ok}, {error}>"),
             Self::Struct(name) => f.write_str(name),
@@ -540,6 +543,15 @@ pub enum Instruction {
         /// 返回类型。
         ty: IrType,
     },
+    /// 等待异步任务完成。
+    Await {
+        /// 目标位置。
+        dest: Place,
+        /// 被等待的任务操作数。
+        task: Operand,
+        /// 任务完成后的结果类型。
+        ty: IrType,
+    },
     /// 调用字符串或列表的内置方法。
     BuiltinCall {
         /// 目标位置。
@@ -710,6 +722,12 @@ impl Instruction {
                     if let Operand::Place(place) = argument {
                         visitor(place);
                     }
+                }
+            }
+            Self::Await { dest, task, .. } => {
+                visitor(dest);
+                if let Operand::Place(place) = task {
+                    visitor(place);
                 }
             }
             Self::BuiltinCall {
@@ -889,6 +907,8 @@ pub struct Function {
     pub params: Vec<Parameter>,
     /// 返回类型。
     pub return_type: IrType,
+    /// 是否为异步函数；其调用结果类型为 `Task<return_type>`。
+    pub is_async: bool,
     /// 局部变量声明。
     pub locals: Vec<Local>,
     /// 控制流图的基本块集合。
@@ -1053,6 +1073,9 @@ fn format_instruction(instruction: &Instruction) -> String {
                 .map(ToString::to_string)
                 .unwrap_or_else(|| "_".to_owned());
             format!("{target} = 调用 {function}({arguments}) : {ty}")
+        }
+        Instruction::Await { dest, task, ty } => {
+            format!("{dest} = 等待 {task} : {ty}")
         }
         Instruction::BuiltinCall {
             dest,

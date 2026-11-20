@@ -553,6 +553,11 @@ impl<'a> Vm<'a> {
                     self.advance(ip + 1);
                     self.push_function_frame(&name, arguments)?;
                 }
+                Opcode::Await => {
+                    return Err(
+                        self.error("当前执行路径不支持「等待」：请使用异步执行入口".to_owned())
+                    );
+                }
                 Opcode::InvokeBuiltin => {
                     let name = instruction.name_arg(0).unwrap_or("").to_owned();
                     let argc = instruction.integer_arg(1).unwrap_or(usize::MAX);
@@ -1349,8 +1354,8 @@ impl<'a> Vm<'a> {
             }
             Some(BuiltinFunction::NetworkGet) => {
                 let url = self.string_argument(name, &arguments, 0)?;
-                let result = match ureq::get(&url).call() {
-                    Ok(response) => match response.into_string() {
+                let result = match reqwest::blocking::get(&url) {
+                    Ok(response) => match response.text() {
                         Ok(body) => Value::ResultValue(Ok(Box::new(Value::String(body)))),
                         Err(error) => Value::ResultValue(Err(Box::new(Value::String(format!(
                             "读取响应体失败：{error}"

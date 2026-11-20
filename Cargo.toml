@@ -44,7 +44,16 @@ base64 = "0.22.1"
 regex = "1.10"
 serde_json = "1.0"
 sha2 = "0.10"
-ureq = "2.10"
+
+# M13 并发模型：Tokio 多线程运行时 + Future 组合子 + 异步 HTTP 客户端。
+# VM 的同步执行路径复用 reqwest 的 blocking 客户端，异步路径挂起到 Tokio。
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+reqwest = { version = "0.12", default-features = false, features = [
+    "blocking",
+    "json",
+    "rustls-tls",
+] }
 
 # M14 项目配置与依赖锁文件；保留声明顺序便于稳定生成摘要与锁文件。
 toml = { version = "0.8", features = ["preserve_order"] }

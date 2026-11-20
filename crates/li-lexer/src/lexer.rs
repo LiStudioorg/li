@@ -408,6 +408,8 @@ impl<'a> Lexer<'a> {
                     ',' => TokenKind::Comma,
                     ';' => TokenKind::Semicolon,
                     '.' => TokenKind::Dot,
+                    ':' => TokenKind::Colon,
+                    '@' => TokenKind::At,
                     _ => {
                         self.report_illegal_character(start, current);
                         return None;
@@ -586,6 +588,7 @@ fn keyword_kind(text: &str) -> Option<TokenKind> {
         "可选" | "option" | "optional" => TokenKind::OptionalType,
         "结果" | "result" => TokenKind::ResultType,
         "原生指针" | "rawptr" | "raw_pointer" | "ptr" => TokenKind::RawPointerType,
+        "任务" | "task" => TokenKind::TaskType,
         "通道" | "channel" => TokenKind::ChannelType,
         "共享" | "shared" => TokenKind::SharedType,
         "借用" | "borrow" => TokenKind::BorrowType,

@@ -52,6 +52,8 @@ pub enum Opcode {
     JumpIfFalse,
     /// 调用函数，后面紧跟实参个数。
     Call,
+    /// 等待任务；任务句柄取自栈顶，结果压回栈顶。
+    Await,
     /// 调用字符串或列表的内置方法，后面紧跟方法名与实参个数。
     InvokeBuiltin,
     /// 弹出返回值并结束当前函数。
@@ -110,6 +112,7 @@ impl Opcode {
             Self::Jump => "JUMP",
             Self::JumpIfFalse => "JUMP_IF_FALSE",
             Self::Call => "CALL",
+            Self::Await => "AWAIT",
             Self::InvokeBuiltin => "INVOKE_BUILTIN",
             Self::Return => "RETURN",
             Self::ReturnVoid => "RETURN_VOID",
@@ -151,6 +154,7 @@ impl Opcode {
             "JUMP" => Self::Jump,
             "JUMP_IF_FALSE" => Self::JumpIfFalse,
             "CALL" => Self::Call,
+            "AWAIT" => Self::Await,
             "INVOKE_BUILTIN" => Self::InvokeBuiltin,
             "RETURN" => Self::Return,
             "RETURN_VOID" => Self::ReturnVoid,

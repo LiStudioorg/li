@@ -315,6 +315,11 @@ impl<'a> FunctionEmitter<'a> {
                 self.emit(opcode, Vec::new(), span);
                 self.emit_store(dest, span);
             }
+            IrInstruction::Await { dest, task, .. } => {
+                self.push_operand(task, span);
+                self.emit(Opcode::Await, Vec::new(), span);
+                self.emit_store(dest, span);
+            }
             IrInstruction::Call {
                 dest,
                 function,

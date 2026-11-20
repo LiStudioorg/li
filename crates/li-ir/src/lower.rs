@@ -41,6 +41,8 @@ pub fn lower(program: &AstProgram) -> Result<Program, DiagnosticBag> {
 struct TypeContext {
     structs: HashMap<String, StructLayout>,
     functions: HashMap<String, Signature>,
+    /// 声明为 `异步 函数` 的函数名；调用它们的表达式类型为 `任务<T>`。
+    async_functions: HashSet<String>,
 }
 
 impl TypeContext {
@@ -57,6 +59,7 @@ impl TypeContext {
                 value: Box::new(self.resolve_type(value)),
             },
             TypeKind::RawPointer(inner) => IrType::RawPointer(Box::new(self.resolve_type(inner))),
+            TypeKind::Task(inner) => IrType::Task(Box::new(self.resolve_type(inner))),
             TypeKind::Optional(inner) => IrType::Optional(Box::new(self.resolve_type(inner))),
             TypeKind::Result { value, error } => IrType::Result {
                 ok: Box::new(self.resolve_type(value)),
@@ -227,6 +230,11 @@ impl Lowerer {
                     return_type,
                 },
             );
+            if declaration.is_async {
+                self.context
+                    .async_functions
+                    .insert(declaration.name.name.clone());
+            }
         }
     }
 
@@ -243,6 +251,7 @@ impl Lowerer {
                 value: Box::new(self.resolve_type(value)),
             },
             TypeKind::RawPointer(inner) => IrType::RawPointer(Box::new(self.resolve_type(inner))),
+            TypeKind::Task(inner) => IrType::Task(Box::new(self.resolve_type(inner))),
             TypeKind::Optional(inner) => IrType::Optional(Box::new(self.resolve_type(inner))),
             TypeKind::Result { value, error } => IrType::Result {
                 ok: Box::new(self.resolve_type(value)),
@@ -310,6 +319,7 @@ struct FunctionLowerer<'a> {
     function_span: Span,
     params: Vec<Parameter>,
     return_type: IrType,
+    is_async: bool,
     locals: Vec<Local>,
     blocks: Vec<BasicBlock>,
     current: Option<usize>,
@@ -333,6 +343,7 @@ impl<'a> FunctionLowerer<'a> {
             function_span: declaration.span,
             params: Vec::new(),
             return_type: context.resolve_type(&declaration.return_type),
+            is_async: declaration.is_async,
             locals: Vec::new(),
             blocks: Vec::new(),
             current: None,
@@ -391,6 +402,7 @@ impl<'a> FunctionLowerer<'a> {
             name: self.name,
             params: self.params,
             return_type: self.return_type,
+            is_async: self.is_async,
             locals: self.locals,
             blocks: self.blocks,
             entry: Label(0),
@@ -871,6 +883,29 @@ impl<'a> FunctionLowerer<'a> {
                     ty: IrType::String,
                 }
             }
+            ExprKind::Await(inner) => {
+                let value = self.lower_expr(inner);
+                let ty = match &value.ty {
+                    IrType::Task(output) => (**output).clone(),
+                    _ => {
+                        self.report(inner.span, "「等待」只能作用于任务值");
+                        IrType::Unknown
+                    }
+                };
+                let dest = self.new_temp();
+                self.emit(
+                    Instruction::Await {
+                        dest: dest.clone(),
+                        task: value.operand,
+                        ty: ty.clone(),
+                    },
+                    expr.span,
+                );
+                TypedValue {
+                    operand: Operand::Place(dest),
+                    ty,
+                }
+            }
             ExprKind::Unary { op, operand } => {
                 let operand = self.lower_expr(operand);
                 let (op, ty) = match op {
@@ -1029,10 +1064,21 @@ impl<'a> FunctionLowerer<'a> {
             arguments.push(value);
         }
 
-        let return_type = signature
+        let mut return_type = signature
             .as_ref()
             .map(|signature| signature.return_type.clone())
             .unwrap_or(IrType::Unknown);
+
+        // 异步函数调用立即返回任务句柄；`网络.获取` 在异步函数体内
+        // 同样返回 `任务<结果<...>>`，由「等待」取出结果。
+        let is_async_call = function_name
+            .as_ref()
+            .is_some_and(|name| self.context.async_functions.contains(name));
+        let is_async_builtin = builtin == Some(BuiltinFunction::NetworkGet) && self.is_async;
+        if is_async_call || is_async_builtin {
+            return_type = IrType::Task(Box::new(return_type));
+        }
+
         let dest = self.new_temp();
 
         match builtin {

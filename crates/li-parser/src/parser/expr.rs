@@ -162,6 +162,9 @@ impl Parser {
         if self.check(&TokenKind::LBracket) {
             return self.parse_list_literal();
         }
+        if self.check(&TokenKind::Await) {
+            return self.parse_await();
+        }
 
         let token = self.peek().clone();
         let span = token.span;
@@ -183,6 +186,15 @@ impl Parser {
 
         self.advance();
         Some(Expr::new(kind, span))
+    }
+
+    /// 解析 `等待 表达式`；等待是前缀运算符，优先级高于二元运算。
+    fn parse_await(&mut self) -> Option<Expr> {
+        let await_token = self.advance();
+        let value = self.parse_unary()?;
+        let span = Span::new(await_token.span.start, value.span.end);
+
+        Some(Expr::new(ExprKind::Await(Box::new(value)), span))
     }
 
     fn parse_parenthesized(&mut self) -> Option<Expr> {

@@ -584,6 +584,13 @@ impl<'a> Generator<'a> {
                     expression
                 ));
             }
+            Instruction::Await { dest, task, .. } => {
+                writer.line(format!(
+                    "{} = await {};",
+                    self.place_js_name(dest, local_names),
+                    self.operand_js_name(task, local_names)
+                ));
+            }
             Instruction::Call {
                 dest,
                 function,

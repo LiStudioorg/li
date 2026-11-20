@@ -475,11 +475,11 @@ fn tracks_unicode_columns_and_crlf_line_endings() {
 
 #[test]
 fn reports_illegal_character_with_exact_location() {
-    let message = lex("让 x = @;").unwrap_err().to_string();
+    let message = lex("让 x = $;").unwrap_err().to_string();
 
     assert!(message.contains("第 1 行第 7 列"), "实际诊断：{message}");
     assert!(message.contains("非法字符"), "实际诊断：{message}");
-    assert!(message.contains("实际 `@`"), "实际诊断：{message}");
+    assert!(message.contains("实际 `$`"), "实际诊断：{message}");
 }
 
 #[test]

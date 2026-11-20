@@ -278,6 +278,11 @@ impl<'a> ScriptTranslator<'a> {
                 return None;
             }
             ExprKind::Parenthesized(inner) => format!("({})", self.expression(inner)?),
+            ExprKind::Await(_) => {
+                // 视图交互代码不支持等待；给出带行列的中文诊断。
+                self.unsupported("`等待` 表达式", expression.span);
+                return None;
+            }
         };
 
         Some(code)

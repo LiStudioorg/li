@@ -61,6 +61,14 @@ impl Parser {
                 let span = Span::new(start, close.span.end);
                 Some(Type::new(TypeKind::RawPointer(Box::new(inner)), span))
             }
+            TokenKind::TaskType => {
+                self.advance();
+                self.expect_kind(&TokenKind::Less, "`<`")?;
+                let inner = self.parse_type()?;
+                let close = self.expect_kind(&TokenKind::Greater, "`>`")?;
+                let span = Span::new(start, close.span.end);
+                Some(Type::new(TypeKind::Task(Box::new(inner)), span))
+            }
             TokenKind::OptionalType => {
                 self.advance();
                 self.expect_kind(&TokenKind::Less, "`<`")?;
