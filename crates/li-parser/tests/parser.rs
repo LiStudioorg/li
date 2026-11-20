@@ -10,6 +10,8 @@ use li_ast::{
 use li_errors::DiagnosticBag;
 use li_parser::{parse, parse_source};
 
+mod mixed_li;
+
 /// 解析源码并断言成功。
 fn parse_ok(source: &str) -> Program {
     parse_source(source).unwrap_or_else(|errors| panic!("解析失败：\n{errors}"))
