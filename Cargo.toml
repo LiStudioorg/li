@@ -58,6 +58,16 @@ reqwest = { version = "0.12", default-features = false, features = [
 # M14 项目配置与依赖锁文件；保留声明顺序便于稳定生成摘要与锁文件。
 toml = { version = "0.8", features = ["preserve_order"] }
 
+# M15 跨平台桌面 GUI：wry 负责 WebView 渲染，tao 负责窗口管理。
+# li-cli 的 `li 桌面 文件.lui` 命令把内存 HTML 加载到原生窗口；
+# 网页 JS 通过 postMessage IPC 桥调用 li 后端内置函数。
+# 注：构建 wry 需要系统 WebKit2GTK（`libwebkit2gtk-4.1-dev`）。
+# 在没有该依赖的 CI / 无头环境上，可以临时把 `li-cli/Cargo.toml` 中的
+# `wry` / `tao` 注释掉，`li 桌面` 命令会回退到「HTML 已生成，请在有
+# 显示器的环境复跑」的降级日志。
+wry = "0.44"
+tao = "0.30"
+
 # 编译器不依赖 unsafe 代码；后续若确有必要，应在局部显式豁免并说明原因。
 [workspace.lints.rust]
 unsafe_code = "forbid"

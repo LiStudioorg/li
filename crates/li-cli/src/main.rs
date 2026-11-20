@@ -11,10 +11,13 @@
 //!   链接为原生二进制；指定目标三元组时自动启用静态链接，用于交叉编译到
 //!   Android / Termux 等缺少 glibc 的场景。
 //! - `li 编译-html <文件.lui>`：把视图文件编译为同名单体 HTML 文件；
-//! - `li 服务 <文件.lui> [端口]`：编译视图并在内存中直接提供 HTTP 服务。
+//! - `li 服务 <文件.lui> [端口]`：编译视图并在内存中直接提供 HTTP 服务；
+//! - `li 桌面 <文件.lui>`：M15 跨平台桌面 GUI，把 `.lui` 加载到原生窗口。
 //!
 //! 前端流程完全复用：语法分析 → 依赖链接 → 语义检查 → 中立 IR 降级 →
 //! 后端代码生成；HTML 后端直接消费视图 AST，不经过 IR。
+
+mod desktop;
 
 use std::env;
 use std::fs;
@@ -135,6 +138,14 @@ fn main() -> ExitCode {
 
             serve_view(Path::new(&args[1]), port)
         }
+        "桌面" => {
+            if args.len() != 2 {
+                eprintln!("错误：命令「桌面」需要一个 .lui 文件参数");
+                print_usage();
+                return ExitCode::FAILURE;
+            }
+            run_desktop(Path::new(&args[1]))
+        }
         "版本" | "--version" | "-V" => {
             println!("li 编译器 v{}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
@@ -163,6 +174,7 @@ fn print_usage() {
     println!("  li 编译-原生 <文件.li> [--target t]  通过 clang 链接为原生二进制（可交叉编译 + 静态链接）");
     println!("  li 编译-html <文件.lui> 将 .lui 视图文件编译为同名 .html 文件");
     println!("  li 服务 <文件.lui> [端口] 编译单体视图并启动 HTTP 服务（默认 8080）");
+    println!("  li 桌面 <文件.lui>    M15 跨平台桌面 GUI：加载 .lui 到原生窗口");
     println!("  li 版本                显示版本信息");
     println!("  li 帮助                显示帮助信息");
 }
@@ -335,12 +347,31 @@ fn run_source(input: &Path) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    match li_vm::execute(&bytecode) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(error) => {
-            eprintln!("{error}");
-            ExitCode::FAILURE
+    // M13：默认走异步入口（Tokio 多线程运行时），`网络.获取` 在 I/O 挂起
+    // 时不阻塞 Tokio 工作线程；同步的 li_vm::execute 仍可用于纯计算程序。
+    let result = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => {
+            let program = std::sync::Arc::new(bytecode.clone());
+            let output = runtime.block_on(async move { li_vm::execute_async(&program).await });
+            match output {
+                Ok(()) => Ok(ExitCode::SUCCESS),
+                Err(error) => {
+                    eprintln!("{error}");
+                    Ok(ExitCode::FAILURE)
+                }
+            }
         }
+        Err(error) => {
+            eprintln!("错误：无法创建 Tokio 运行时：{error}");
+            Ok(ExitCode::FAILURE)
+        }
+    };
+    match result {
+        Ok(code) => code,
+        Err(code) => code,
     }
 }
 
@@ -794,13 +825,27 @@ fn execute_bytecode(input: &Path) -> ExitCode {
         }
     };
 
-    match li_vm::execute(&program) {
-        Ok(()) => ExitCode::SUCCESS,
+    let result = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => {
+            let program = std::sync::Arc::new(program.clone());
+            let output = runtime.block_on(async move { li_vm::execute_async(&program).await });
+            match output {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("{error}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
         Err(error) => {
-            eprintln!("{error}");
+            eprintln!("错误：无法创建 Tokio 运行时：{error}");
             ExitCode::FAILURE
         }
-    }
+    };
+    result
 }
 
 /// 判断程序中是否包含视图声明；递归检查模块内部。
@@ -823,5 +868,24 @@ fn io_error_text(error: &std::io::Error) -> &'static str {
         ErrorKind::WriteZero => "写入失败",
         ErrorKind::UnexpectedEof => "文件内容不完整",
         _ => "输入输出错误",
+    }
+}
+
+/// M15 桌面 GUI：解析 `.lui` 文件并加载到原生窗口。
+fn run_desktop(input: &Path) -> ExitCode {
+    if input.extension().and_then(|extension| extension.to_str()) != Some("lui") {
+        eprintln!(
+            "错误：命令「桌面」需要 .lui 视图文件，实际为「{}」",
+            input.display()
+        );
+        return ExitCode::FAILURE;
+    }
+
+    match desktop::launch(input) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(errors) => {
+            eprintln!("{}", li_errors::render(&errors, true));
+            ExitCode::FAILURE
+        }
     }
 }

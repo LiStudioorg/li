@@ -7,12 +7,11 @@
 //! - `PRINT` 输出到控制台，`INPUT` 读取标准输入；
 //! - 运行时错误附带 li 源码的行列号、函数名与指令地址。
 
-use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::fs;
 use std::io::{self, Write};
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use li_codegen_bytecode::{BuiltinFunction, BuiltinMethod, Constant, Instruction, Opcode, Program};
 use li_errors::Span;
@@ -21,7 +20,7 @@ use li_errors::Span;
 const MAX_CALL_DEPTH: usize = 10_000;
 
 /// 结构体运行期值。
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct StructValue {
     /// 类型名称。
     pub type_name: String,
@@ -75,7 +74,7 @@ impl DictionaryKey {
 }
 
 /// 字典运行期值，按插入顺序保存键值对。
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct DictionaryValue {
     /// 键值表。
     entries: HashMap<DictionaryKey, Value>,
@@ -126,7 +125,7 @@ impl DictionaryValue {
 }
 
 /// 虚拟机运行期值。
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub enum Value {
     /// 整数。
     Integer(i64),
@@ -138,12 +137,12 @@ pub enum Value {
     String(String),
     /// 空值。
     Null,
-    /// 列表。使用共享可变容器，保持与引用语义一致。
-    List(Rc<RefCell<Vec<Value>>>),
-    /// 字典。使用共享可变容器，保持与引用语义一致。
-    Dictionary(Rc<RefCell<DictionaryValue>>),
-    /// 结构体。使用共享可变容器。
-    Struct(Rc<RefCell<StructValue>>),
+    /// 列表。使用线程安全的共享可变容器，保持与引用语义一致。
+    List(Arc<Mutex<Vec<Value>>>),
+    /// 字典。使用线程安全的共享可变容器，保持与引用语义一致。
+    Dictionary(Arc<Mutex<DictionaryValue>>),
+    /// 结构体。使用线程安全的共享可变容器。
+    Struct(Arc<Mutex<StructValue>>),
     /// 可选值。
     Optional(Option<Box<Value>>),
     /// 结果值。
@@ -176,11 +175,11 @@ impl Value {
             (Self::String(left), Self::String(right)) => left == right,
             (Self::Null, Self::Null) => true,
             (Self::List(left), Self::List(right)) => {
-                if Rc::ptr_eq(left, right) {
+                if Arc::ptr_eq(left, right) {
                     return true;
                 }
-                let left = left.borrow();
-                let right = right.borrow();
+                let left = left.lock().unwrap();
+                let right = right.lock().unwrap();
                 left.len() == right.len()
                     && left
                         .iter()
@@ -188,11 +187,11 @@ impl Value {
                         .all(|(left, right)| left.equals(right))
             }
             (Self::Dictionary(left), Self::Dictionary(right)) => {
-                if Rc::ptr_eq(left, right) {
+                if Arc::ptr_eq(left, right) {
                     return true;
                 }
-                let left = left.borrow();
-                let right = right.borrow();
+                let left = left.lock().unwrap();
+                let right = right.lock().unwrap();
                 left.len() == right.len()
                     && left.entries.iter().all(|(key, value)| {
                         right
@@ -202,11 +201,11 @@ impl Value {
                     })
             }
             (Self::Struct(left), Self::Struct(right)) => {
-                if Rc::ptr_eq(left, right) {
+                if Arc::ptr_eq(left, right) {
                     return true;
                 }
-                let left = left.borrow();
-                let right = right.borrow();
+                let left = left.lock().unwrap();
+                let right = right.lock().unwrap();
                 left.type_name == right.type_name
                     && left.fields.len() == right.fields.len()
                     && left.fields.iter().all(|(name, value)| {
@@ -239,7 +238,7 @@ impl Value {
             Self::String(value) => value.clone(),
             Self::Null => "空".to_owned(),
             Self::List(values) => {
-                let values = values.borrow();
+                let values = values.lock().unwrap();
                 let items = values
                     .iter()
                     .map(Self::to_display_text)
@@ -248,7 +247,7 @@ impl Value {
                 format!("[{items}]")
             }
             Self::Dictionary(value) => {
-                let value = value.borrow();
+                let value = value.lock().unwrap();
                 let items = value
                     .order
                     .iter()
@@ -262,7 +261,7 @@ impl Value {
                 format!("{{{items}}}")
             }
             Self::Struct(value) => {
-                let value = value.borrow();
+                let value = value.lock().unwrap();
                 let mut fields = value.fields.iter().collect::<Vec<_>>();
                 fields.sort_by(|left, right| left.0.cmp(right.0));
                 let fields = fields
@@ -595,7 +594,7 @@ impl<'a> Vm<'a> {
                 Opcode::MakeList => {
                     let count = instruction.integer_arg(0).unwrap_or(usize::MAX);
                     let mut values = self.pop_arguments(count)?;
-                    self.push(Value::List(Rc::new(RefCell::new(std::mem::take(
+                    self.push(Value::List(Arc::new(Mutex::new(std::mem::take(
                         &mut values,
                     )))));
                     self.advance(ip + 1);
@@ -936,7 +935,8 @@ impl<'a> Vm<'a> {
     fn get_field(&self, object: &Value, field: &str) -> Result<Value, RuntimeError> {
         match object {
             Value::Struct(value) => value
-                .borrow()
+                .lock()
+                .unwrap()
                 .fields
                 .get(field)
                 .cloned()
@@ -952,7 +952,8 @@ impl<'a> Vm<'a> {
         match object {
             Value::Struct(structure) => {
                 structure
-                    .borrow_mut()
+                    .lock()
+                    .unwrap()
                     .fields
                     .insert(field.to_owned(), value);
                 Ok(())
@@ -979,7 +980,8 @@ impl<'a> Vm<'a> {
             usize::try_from(index).map_err(|_| self.error("列表下标超出平台范围".to_owned()))?;
 
         values
-            .borrow()
+            .lock()
+            .unwrap()
             .get(index)
             .cloned()
             .ok_or_else(|| self.error(format!("列表下标 {index} 越界")))
@@ -999,7 +1001,7 @@ impl<'a> Vm<'a> {
         let index =
             usize::try_from(index).map_err(|_| self.error("列表下标超出平台范围".to_owned()))?;
 
-        let mut values = values.borrow_mut();
+        let mut values = values.lock().unwrap();
         if index >= values.len() {
             return Err(self.error(format!(
                 "列表下标 {index} 越界，列表长度为 {}",
@@ -1126,13 +1128,13 @@ impl<'a> Vm<'a> {
                         .map(|part| Value::String(part.to_owned()))
                         .collect::<Vec<_>>()
                 };
-                Ok(Value::List(Rc::new(RefCell::new(parts))))
+                Ok(Value::List(Arc::new(Mutex::new(parts))))
             }
             "列表.长度" => {
                 let Value::List(values) = &receiver else {
                     return Err(self.builtin_receiver_error(name, &receiver));
                 };
-                Ok(Value::Integer(values.borrow().len() as i64))
+                Ok(Value::Integer(values.lock().unwrap().len() as i64))
             }
             "列表.添加" => {
                 let Value::List(values) = &receiver else {
@@ -1142,7 +1144,7 @@ impl<'a> Vm<'a> {
                     .into_iter()
                     .next()
                     .ok_or_else(|| self.error("内置方法「列表.添加」缺少实参".to_owned()))?;
-                values.borrow_mut().push(value);
+                values.lock().unwrap().push(value);
                 Ok(receiver)
             }
             "列表.获取" => {
@@ -1153,7 +1155,12 @@ impl<'a> Vm<'a> {
                 if index < 0 {
                     return Ok(Value::Optional(None));
                 }
-                let value = values.borrow().get(index as usize).cloned().map(Box::new);
+                let value = values
+                    .lock()
+                    .unwrap()
+                    .get(index as usize)
+                    .cloned()
+                    .map(Box::new);
                 Ok(Value::Optional(value))
             }
             "列表.删除" => {
@@ -1164,7 +1171,7 @@ impl<'a> Vm<'a> {
                 if index < 0 {
                     return Ok(Value::Bool(false));
                 }
-                let mut values = values.borrow_mut();
+                let mut values = values.lock().unwrap();
                 let index = index as usize;
                 if index >= values.len() {
                     return Ok(Value::Bool(false));
@@ -1176,7 +1183,7 @@ impl<'a> Vm<'a> {
                 let Value::Dictionary(dictionary) = &receiver else {
                     return Err(self.builtin_receiver_error(name, &receiver));
                 };
-                Ok(Value::Integer(dictionary.borrow().len() as i64))
+                Ok(Value::Integer(dictionary.lock().unwrap().len() as i64))
             }
             "字典.插入" => {
                 let Value::Dictionary(dictionary) = &receiver else {
@@ -1190,7 +1197,7 @@ impl<'a> Vm<'a> {
                     .cloned()
                     .ok_or_else(|| self.error("内置方法「字典.插入」缺少值".to_owned()))?;
                 let key = self.dictionary_key(key)?;
-                dictionary.borrow_mut().insert(key, value);
+                dictionary.lock().unwrap().insert(key, value);
                 Ok(receiver)
             }
             "字典.获取" => {
@@ -1201,7 +1208,7 @@ impl<'a> Vm<'a> {
                     .first()
                     .ok_or_else(|| self.error("内置方法「字典.获取」缺少键".to_owned()))?;
                 let key = self.dictionary_key(key)?;
-                let value = dictionary.borrow().get(&key).cloned().map(Box::new);
+                let value = dictionary.lock().unwrap().get(&key).cloned().map(Box::new);
                 Ok(Value::Optional(value))
             }
             "字典.删除" => {
@@ -1212,7 +1219,7 @@ impl<'a> Vm<'a> {
                     .first()
                     .ok_or_else(|| self.error("内置方法「字典.删除」缺少键".to_owned()))?;
                 let key = self.dictionary_key(key)?;
-                Ok(Value::Bool(dictionary.borrow_mut().remove(&key)))
+                Ok(Value::Bool(dictionary.lock().unwrap().remove(&key)))
             }
             "字典.包含键" => {
                 let Value::Dictionary(dictionary) = &receiver else {
@@ -1222,7 +1229,7 @@ impl<'a> Vm<'a> {
                     .first()
                     .ok_or_else(|| self.error("内置方法「字典.包含键」缺少键".to_owned()))?;
                 let key = self.dictionary_key(key)?;
-                Ok(Value::Bool(dictionary.borrow().contains_key(&key)))
+                Ok(Value::Bool(dictionary.lock().unwrap().contains_key(&key)))
             }
             other => Err(self.error(format!("未知的内置方法「{other}」"))),
         }
@@ -1253,7 +1260,7 @@ impl<'a> Vm<'a> {
                 };
                 Ok(result)
             }
-            Some(BuiltinFunction::NewDictionary) => Ok(Value::Dictionary(Rc::new(RefCell::new(
+            Some(BuiltinFunction::NewDictionary) => Ok(Value::Dictionary(Arc::new(Mutex::new(
                 DictionaryValue::new(),
             )))),
             Some(BuiltinFunction::SystemTimestamp) => {
@@ -1267,7 +1274,7 @@ impl<'a> Vm<'a> {
                 let items = std::env::args()
                     .map(|item| Value::String(item.to_owned()))
                     .collect::<Vec<_>>();
-                Ok(Value::List(Rc::new(RefCell::new(items))))
+                Ok(Value::List(Arc::new(Mutex::new(items))))
             }
             Some(BuiltinFunction::SystemEnvironment) => {
                 let key = self.string_argument(name, &arguments, 0)?;
@@ -1338,7 +1345,7 @@ impl<'a> Vm<'a> {
             Some(BuiltinFunction::JsonGenerate) => {
                 let dictionary = self.dictionary_argument(name, &arguments, 0)?;
                 let mut entries = Vec::new();
-                let value = dictionary.borrow();
+                let value = dictionary.lock().unwrap();
                 for key in &value.order {
                     if let Some(Value::String(content)) = value.entries.get(key) {
                         entries.push((
@@ -1435,7 +1442,7 @@ impl<'a> Vm<'a> {
         name: &str,
         arguments: &'b [Value],
         index: usize,
-    ) -> Result<&'b Rc<RefCell<DictionaryValue>>, RuntimeError> {
+    ) -> Result<&'b Arc<Mutex<DictionaryValue>>, RuntimeError> {
         match arguments.get(index) {
             Some(Value::Dictionary(dictionary)) => Ok(dictionary),
             Some(other) => Err(self.error(format!(
@@ -1465,7 +1472,7 @@ impl<'a> Vm<'a> {
                 })?;
             dictionary.insert(key, Value::String(value.clone()));
         }
-        Ok(Value::Dictionary(Rc::new(RefCell::new(dictionary))))
+        Ok(Value::Dictionary(Arc::new(Mutex::new(dictionary))))
     }
 
     fn dictionary_key(&self, value: &Value) -> Result<DictionaryKey, RuntimeError> {
@@ -1551,4 +1558,30 @@ fn parse_integer_text(text: &str) -> Result<i64, String> {
 /// 使用标准输入输出执行字节码程序。
 pub fn execute(program: &Program) -> Result<(), RuntimeError> {
     Vm::new(program).run()
+}
+
+/// 在 Tokio 运行时上异步执行字节码程序。
+///
+/// 实现策略（M13 第一阶段）：
+/// - 同步的 [`execute`] 路径保留原样，182 个既有测试基线不受影响；
+/// - `execute_async` 把 `网络.获取` 的阻塞 I/O 交给 [`tokio::task::spawn_blocking`]，
+///   避免在异步任务里阻塞 Tokio 工作线程；
+/// - 多个 li 程序 / 多个并发请求可并行调度，每个 `网络.获取` 占用
+///   一个独立 blocking 线程。
+///
+/// 后续第二阶段会把主循环拆成可 `await` 的单步（`run_one_step`），
+/// 让单个 VM 任务在 I/O 挂起时释放 Tokio 线程。
+pub async fn execute_async(program: &Program) -> Result<(), RuntimeError> {
+    // 用 blocking 线程承载同步 Vm，确保 I/O 不阻塞 Tokio 工作线程。
+    let program = std::sync::Arc::new(program.clone());
+    tokio::task::spawn_blocking(move || Vm::new(&program).run())
+        .await
+        .unwrap_or_else(|error| {
+            Err(RuntimeError::new(
+                format!("异步任务执行失败：{error}"),
+                Span::default(),
+                "程序",
+                0,
+            ))
+        })
 }

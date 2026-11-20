@@ -385,6 +385,13 @@ impl DiagnosticBag {
         Self::default()
     }
 
+    /// 用单条诊断构造集合；便于快速把错误包成可传播的 `Err`。
+    pub fn from_single(diagnostic: Diagnostic) -> Self {
+        let mut bag = Self::new();
+        bag.push(diagnostic);
+        bag
+    }
+
     /// 添加一条诊断。
     pub fn push(&mut self, diagnostic: Diagnostic) {
         self.diagnostics.push(diagnostic);

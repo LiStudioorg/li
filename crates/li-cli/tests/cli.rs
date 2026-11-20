@@ -738,3 +738,53 @@ fn run_reports_missing_dependency_lock() {
 
     let _ = fs::remove_dir_all(&directory);
 }
+
+#[test]
+fn desktop_command_falls_back_in_headless_environment() {
+    // M15：无头 CI 环境没有 WebKit2GTK，`li 桌面` 必须输出降级日志并成功退出。
+    let directory = temp_directory("li-cli-桌面");
+    let input = directory.join("桌面.li");
+    fs::write(&input, "函数 主() -> 整数 { 返回 0; }\n").expect("无法写入 li 源文件");
+    // 复用 fixture 中的 .lui 文件，避免额外维护。
+    let lui = copy_fixture_to(&directory, "hello.lui");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_li"))
+        .arg("桌面")
+        .arg(&lui)
+        .output()
+        .expect("无法启动 li 编译器");
+
+    assert!(
+        output.status.success(),
+        "桌面命令在无头环境应正常退出：\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("桌面 GUI 模式初始化成功"),
+        "缺少降级日志：{stderr}"
+    );
+
+    let _ = fs::remove_dir_all(&directory);
+}
+
+/// 把 fixture 的 `.lui` 文件复制到测试目录，返回目标路径。
+fn copy_fixture_to(directory: &std::path::Path, name: &str) -> std::path::PathBuf {
+    let source = std::env::var("CARGO_MANIFEST_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::env::current_dir().unwrap())
+        .join("..")
+        .join("li-parser")
+        .join("tests")
+        .join("fixtures")
+        .join(name);
+    let target = directory.join(name);
+    std::fs::copy(&source, &target).unwrap_or_else(|_| {
+        panic!(
+            "无法复制 fixture「{name}」（源：{}）到测试目录",
+            source.display()
+        );
+    });
+    target
+}

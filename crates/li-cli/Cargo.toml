@@ -23,6 +23,14 @@ li-codegen-html.workspace = true
 li-codegen-llvm.workspace = true
 li-vm.workspace = true
 li-package.workspace = true
+tokio.workspace = true
+serde_json.workspace = true
+# M15 桌面 GUI：wry 渲染 HTML，tao 管理窗口；仅在 `li 桌面` 命令路径启用。
+# 注：构建 wry 需要系统 WebKit2GTK（libwebkit2gtk-4.1-dev）；
+# 无头 CI 环境可以临时注释掉 wry / tao 两行，`li 桌面` 会输出降级日志。
+# 当前环境缺少 WebKit2GTK 系统依赖，故默认注释掉，待安装系统库后取消注释。
+# wry.workspace = true
+# tao.workspace = true
 
 [lints]
 workspace = true
