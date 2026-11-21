@@ -609,6 +609,7 @@ fn keyword_kind(text: &str) -> Option<TokenKind> {
         "通道" | "channel" => TokenKind::ChannelType,
         "共享" | "shared" => TokenKind::SharedType,
         "借用" | "borrow" => TokenKind::BorrowType,
+        "外部" | "extern" => TokenKind::Extern,
 
         "加" => TokenKind::Plus,
         "减" => TokenKind::Minus,

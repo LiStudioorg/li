@@ -247,3 +247,14 @@ fn propagates_no_gc_directive_to_ir() {
     let program = lower_source("#无垃圾回收\n函数 主() -> 整数 { 返回 0; }");
     assert!(program.no_gc, "IR 必须保留 `#无垃圾回收` 标记");
 }
+
+#[test]
+fn lowers_extern_function_to_extern_ir_function() {
+    let program = lower_source("外部 函数 putchar(字符: 整数) -> 整数;");
+    let function = program.function("putchar").expect("缺少外部函数");
+    assert!(function.is_extern, "IR 必须记录外部函数标记");
+    assert!(
+        function.blocks[0].instructions.is_empty(),
+        "外部函数体应为空"
+    );
+}

@@ -348,6 +348,18 @@ fn run_source(input: &Path) -> ExitCode {
 
     let bytecode = li_codegen_bytecode::generate(&ir);
 
+    if let Some(extern_name) = bytecode
+        .functions
+        .iter()
+        .find_map(|function| function.is_extern.then_some(function.name.clone()))
+    {
+        eprintln!(
+            "错误：外部 函数「{extern_name}」无法在 VM 中绑定动态链接库；\
+             请改用 `li 编译-原生` 生成原生二进制"
+        );
+        return ExitCode::FAILURE;
+    }
+
     if let Err(message) = bytecode.validate() {
         eprintln!("错误：生成的字节码校验失败：{message}");
         return ExitCode::FAILURE;
@@ -786,6 +798,18 @@ fn compile_to_bytecode(input: &Path) -> ExitCode {
     };
 
     let bytecode = li_codegen_bytecode::generate(&ir);
+
+    if let Some(extern_name) = bytecode
+        .functions
+        .iter()
+        .find_map(|function| function.is_extern.then_some(function.name.clone()))
+    {
+        eprintln!(
+            "错误：外部 函数「{extern_name}」无法在 VM 中绑定动态链接库；\
+             请改用 `li 编译-原生` 生成原生二进制"
+        );
+        return ExitCode::FAILURE;
+    }
 
     if let Err(message) = bytecode.validate() {
         eprintln!("错误：生成的字节码校验失败：{message}");

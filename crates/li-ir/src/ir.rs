@@ -912,6 +912,9 @@ pub struct Function {
     pub return_type: IrType,
     /// 是否为异步函数；其调用结果类型为 `Task<return_type>`。
     pub is_async: bool,
+    /// 是否为 C-ABI 外部函数；LLVM 后端生成 `declare`，VM / JS 后端在
+    /// 调用点报致命错误。
+    pub is_extern: bool,
     /// 局部变量声明。
     pub locals: Vec<Local>,
     /// 控制流图的基本块集合。

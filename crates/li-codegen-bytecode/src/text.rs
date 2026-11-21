@@ -353,6 +353,7 @@ impl<'a> Parser<'a> {
             arity,
             slots: slots.unwrap_or_default(),
             code,
+            is_extern: false,
         })
     }
 

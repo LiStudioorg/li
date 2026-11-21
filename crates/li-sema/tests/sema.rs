@@ -846,3 +846,23 @@ fn no_gc_warns_on_heap_types_but_allows_compilation() {
     assert!(message.contains("列表"), "诊断：\n{message}");
     assert!(message.contains("依赖堆分配"), "诊断：\n{message}");
 }
+
+#[test]
+fn warns_when_declaring_extern_function() {
+    let source = "\
+外部 函数 putchar(字符: 整数) -> 整数;
+函数 主() -> 整数 {
+    让 输出: 整数 = putchar(72);
+    返回 0;
+}";
+
+    let warnings = match run_sema(source) {
+        Ok(warnings) => warnings,
+        Err(errors) => panic!("外部 函数 不应拦截编译：\n{errors}"),
+    };
+    let message = warnings.to_string();
+    assert!(
+        message.contains("外部 函数「putchar」"),
+        "诊断：\n{message}"
+    );
+}

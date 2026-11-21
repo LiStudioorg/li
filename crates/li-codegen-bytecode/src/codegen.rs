@@ -47,7 +47,21 @@ pub fn generate(program: &IrProgram) -> Program {
     let functions = program
         .functions
         .iter()
-        .map(|function| generate_function(function, &mut constants, &mut constant_indices))
+        .map(|function| {
+            if function.is_extern {
+                // 外部函数没有函数体；字节码只保留签名，调用点由 VM / JS
+                // 后端在调用时报致命错误。
+                FunctionCode {
+                    name: function.name.clone(),
+                    arity: function.params.len(),
+                    slots: Vec::new(),
+                    code: Vec::new(),
+                    is_extern: true,
+                }
+            } else {
+                generate_function(function, &mut constants, &mut constant_indices)
+            }
+        })
         .collect();
 
     let entry_function = program.function("主").or_else(|| program.function("main"));
@@ -223,6 +237,7 @@ impl<'a> FunctionEmitter<'a> {
             arity: function.params.len(),
             slots: self.slots,
             code: self.code,
+            is_extern: function.is_extern,
         }
     }
 

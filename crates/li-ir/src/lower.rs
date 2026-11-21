@@ -50,6 +50,38 @@ struct TypeContext {
 }
 
 impl TypeContext {
+    /// 为 C-ABI 外部函数构造一个空壳 IR 函数：参数已解析、函数体为空，
+    /// `is_extern` 为 `true`。LLVM 后端据此生成 `declare`，VM / JS
+    /// 后端在调用点报致命错误。
+    pub fn make_extern_function(&self, declaration: &li_ast::FuncDecl) -> Function {
+        let params = declaration
+            .params
+            .iter()
+            .map(|param| Parameter {
+                name: param.name.name.clone(),
+                ty: self.resolve_type(&param.ty),
+            })
+            .collect();
+        let return_type = self.resolve_type(&declaration.return_type);
+
+        Function {
+            name: declaration.name.name.clone(),
+            params,
+            return_type,
+            is_async: false,
+            is_extern: true,
+            locals: Vec::new(),
+            blocks: vec![BasicBlock {
+                label: Label(0),
+                instructions: Vec::new(),
+                instruction_spans: Vec::new(),
+                terminator: Terminator::Return(None),
+                terminator_span: declaration.span,
+            }],
+            entry: Label(0),
+        }
+    }
+
     /// 把 AST 类型解析为 IR 类型；未知类型降级为 `Unknown`。
     fn resolve_type(&self, ty: &Type) -> IrType {
         match &ty.kind {
@@ -102,6 +134,10 @@ impl StructLayout {
 struct Signature {
     params: Vec<IrType>,
     return_type: IrType,
+    #[allow(dead_code)]
+    /// 是否为 C-ABI 外部函数；LLVM 后端生成 `declare`，VM / JS 后端在
+    /// 调用点报致命错误。
+    is_extern: bool,
 }
 
 /// 降级器的全局状态。
@@ -145,9 +181,16 @@ impl Lowerer {
 
         let mut ir_functions = Vec::new();
         for declaration in &functions {
-            let context = &self.context;
-            let diagnostics = &mut self.diagnostics;
-            let mut lowerer = FunctionLowerer::new(context, diagnostics, declaration);
+            if declaration.is_extern {
+                // 外部函数没有函数体；LLVM 后端会生成 `declare`，
+                // VM / JS 后端在调用点报致命错误。
+                let ir_function = self.context.make_extern_function(declaration);
+                ir_functions.push(ir_function);
+                continue;
+            }
+
+            let mut lowerer =
+                FunctionLowerer::new(&self.context, &mut self.diagnostics, declaration);
             lowerer.lower(&declaration.body);
             ir_functions.push(lowerer.finish());
         }
@@ -261,6 +304,7 @@ impl Lowerer {
                 Signature {
                     params,
                     return_type,
+                    is_extern: declaration.is_extern,
                 },
             );
             if declaration.is_async {
@@ -357,6 +401,7 @@ struct FunctionLowerer<'a> {
     params: Vec<Parameter>,
     return_type: IrType,
     is_async: bool,
+    is_extern: bool,
     locals: Vec<Local>,
     blocks: Vec<BasicBlock>,
     current: Option<usize>,
@@ -381,6 +426,7 @@ impl<'a> FunctionLowerer<'a> {
             params: Vec::new(),
             return_type: context.resolve_type(&declaration.return_type),
             is_async: declaration.is_async,
+            is_extern: declaration.is_extern,
             locals: Vec::new(),
             blocks: Vec::new(),
             current: None,
@@ -440,6 +486,7 @@ impl<'a> FunctionLowerer<'a> {
             params: self.params,
             return_type: self.return_type,
             is_async: self.is_async,
+            is_extern: self.is_extern,
             locals: self.locals,
             blocks: self.blocks,
             entry: Label(0),
@@ -1615,6 +1662,7 @@ fn builtin_function_signature(function: BuiltinFunction) -> Signature {
                 ok: Box::new(IrType::String),
                 error: Box::new(IrType::String),
             },
+            is_extern: false,
         },
         BuiltinFunction::WriteText => Signature {
             params: vec![IrType::String, IrType::String],
@@ -1622,6 +1670,7 @@ fn builtin_function_signature(function: BuiltinFunction) -> Signature {
                 ok: Box::new(IrType::Integer),
                 error: Box::new(IrType::String),
             },
+            is_extern: false,
         },
         BuiltinFunction::NewDictionary => Signature {
             params: Vec::new(),
@@ -1629,26 +1678,32 @@ fn builtin_function_signature(function: BuiltinFunction) -> Signature {
                 key: Box::new(IrType::Unknown),
                 value: Box::new(IrType::Unknown),
             },
+            is_extern: false,
         },
         BuiltinFunction::SystemTimestamp => Signature {
             params: Vec::new(),
             return_type: IrType::Integer,
+            is_extern: false,
         },
         BuiltinFunction::SystemArguments => Signature {
             params: Vec::new(),
             return_type: IrType::List(Box::new(IrType::String)),
+            is_extern: false,
         },
         BuiltinFunction::SystemEnvironment => Signature {
             params: vec![IrType::String],
             return_type: IrType::Optional(Box::new(IrType::String)),
+            is_extern: false,
         },
         BuiltinFunction::RegexMatch => Signature {
             params: vec![IrType::String, IrType::String],
             return_type: IrType::Bool,
+            is_extern: false,
         },
         BuiltinFunction::RegexReplace => Signature {
             params: vec![IrType::String, IrType::String, IrType::String],
             return_type: IrType::String,
+            is_extern: false,
         },
         BuiltinFunction::JsonParse => Signature {
             params: vec![IrType::String],
@@ -1659,6 +1714,7 @@ fn builtin_function_signature(function: BuiltinFunction) -> Signature {
                 }),
                 error: Box::new(IrType::String),
             },
+            is_extern: false,
         },
         BuiltinFunction::JsonGenerate => Signature {
             params: vec![IrType::Dictionary {
@@ -1666,6 +1722,7 @@ fn builtin_function_signature(function: BuiltinFunction) -> Signature {
                 value: Box::new(IrType::String),
             }],
             return_type: IrType::String,
+            is_extern: false,
         },
         BuiltinFunction::NetworkGet => Signature {
             params: vec![IrType::String],
@@ -1673,14 +1730,17 @@ fn builtin_function_signature(function: BuiltinFunction) -> Signature {
                 ok: Box::new(IrType::String),
                 error: Box::new(IrType::String),
             },
+            is_extern: false,
         },
         BuiltinFunction::CryptoBase64Encode => Signature {
             params: vec![IrType::String],
             return_type: IrType::String,
+            is_extern: false,
         },
         BuiltinFunction::CryptoSha256 => Signature {
             params: vec![IrType::String],
             return_type: IrType::String,
+            is_extern: false,
         },
     }
 }

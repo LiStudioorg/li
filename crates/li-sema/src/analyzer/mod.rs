@@ -189,6 +189,36 @@ impl Analyzer {
                 continue;
             }
 
+            // C-ABI 外部函数没有函数体；登记签名但不允许调用，
+            // VM / JS 后端在 IR 降级阶段会再次拦截。
+            if declaration.is_extern {
+                self.diagnostics.push(
+                    Diagnostic::warning(format!(
+                        "外部 函数「{}」将在 LLVM 后端生成 C-ABI 声明；\
+                         VM 与 JS 后端无法在运行时绑定动态链接库",
+                        declaration.name.name,
+                    ))
+                    .with_span(declaration.span)
+                    .with_note("建议改用 `li 编译-原生` 编译并运行"),
+                );
+
+                let mut extern_params = Vec::with_capacity(declaration.params.len());
+                for param in &declaration.params {
+                    extern_params.push(self.resolve_type(&param.ty));
+                }
+                let extern_return = self.resolve_type(&declaration.return_type);
+
+                self.functions.insert(
+                    declaration.name.name.clone(),
+                    FunctionSignature {
+                        params: extern_params,
+                        return_type: extern_return,
+                        is_async: false,
+                    },
+                );
+                continue;
+            }
+
             let mut params = Vec::with_capacity(declaration.params.len());
             for param in &declaration.params {
                 params.push(self.resolve_type(&param.ty));

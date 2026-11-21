@@ -30,6 +30,7 @@ fn builds_a_minimal_program() {
         params: vec![parameter],
         return_type: integer,
         is_async: false,
+        is_extern: false,
         body,
         span,
     };

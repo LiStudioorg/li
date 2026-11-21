@@ -104,6 +104,8 @@ pub enum TokenKind {
     At,
     /// `#无垃圾回收` 文件头指令，关闭垃圾回收、面向 no_std 目标。
     NoGc,
+    /// `外部` / `extern`，C 语言 ABI 函数声明关键字。
+    Extern,
     /// `通道` / `channel`，并发通道类型（当前版本仅预留）。
     ChannelType,
     /// `共享` / `shared`，共享所有权类型（当前版本仅预留）。
@@ -220,6 +222,7 @@ impl TokenKind {
             Self::TaskType => "任务",
             Self::At => "@",
             Self::NoGc => "#无垃圾回收",
+            Self::Extern => "外部",
             Self::ChannelType => "通道",
             Self::SharedType => "共享",
             Self::BorrowType => "借用",
@@ -288,6 +291,7 @@ impl fmt::Display for TokenKind {
             Self::TaskType => f.write_str("`任务`"),
             Self::At => f.write_str("`@`"),
             Self::NoGc => f.write_str("`#无垃圾回收`"),
+            Self::Extern => f.write_str("`外部`"),
             Self::ChannelType => f.write_str("`通道`"),
             Self::SharedType => f.write_str("`共享`"),
             Self::BorrowType => f.write_str("`借用`"),

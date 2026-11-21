@@ -692,7 +692,9 @@ fn recovers_from_multiple_syntax_errors() {
     assert!(message.contains("实际 `=`"), "诊断：\n{message}");
     assert!(message.contains("期望 表达式"), "诊断：\n{message}");
     assert!(
-        message.contains("期望 `模块`、`导入`、`函数`、`异步 函数`、`类型`、`枚举` 或 `视图`"),
+        message.contains(
+            "期望 `模块`、`导入`、`函数`、`异步 函数`、`外部 函数`、`类型`、`枚举` 或 `视图`"
+        ),
         "诊断：\n{message}"
     );
 }
@@ -960,4 +962,25 @@ fn rejects_duplicate_no_gc_directive() {
         message.contains("重复的 `#无垃圾回收` 指令"),
         "诊断：\n{message}"
     );
+}
+
+#[test]
+fn parses_extern_function_declaration() {
+    let program = parse_ok("外部 函数 putchar(字符: 整数) -> 整数;");
+    assert!(!program.no_gc);
+
+    let Item::Function(function) = &program.items[0] else {
+        panic!("外部 函数 应生成 Item::Function");
+    };
+    assert!(function.is_extern, "外部 函数 的 is_extern 应为 true");
+    assert_eq!(function.name.name, "putchar");
+    assert_eq!(function.params.len(), 1);
+    assert!(function.body.stmts.is_empty(), "外部 函数 应有空函数体占位");
+}
+
+#[test]
+fn rejects_extern_keyword_without_function() {
+    let errors = parse_err("外部 putchar(字符: 整数) -> 整数;");
+    let message = errors.to_string();
+    assert!(message.contains("`函数`"), "诊断：\n{message}");
 }

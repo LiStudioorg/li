@@ -387,6 +387,17 @@ pub fn generate(program: &Program) -> Result<String, String> {
         );
     }
 
+    if let Some(extern_name) = program
+        .functions
+        .iter()
+        .find_map(|function| function.is_extern.then_some(function.name.clone()))
+    {
+        return Err(format!(
+            "JavaScript 后端无法绑定外部 函数「{extern_name}」；\
+             请改用 `li 编译-原生` 生成原生二进制"
+        ));
+    }
+
     let mut generator = Generator::new(program);
     Ok(generator.generate())
 }

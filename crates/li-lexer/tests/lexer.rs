@@ -594,3 +594,12 @@ fn recognizes_no_gc_directive_but_not_as_comment() {
     );
     assert_eq!(TokenKind::NoGc.to_string(), "`#无垃圾回收`");
 }
+
+#[test]
+fn recognizes_extern_keyword() {
+    assert_eq!(
+        kinds("外部 函数 putchar(字符: 整数) -> 整数;")[0],
+        TokenKind::Extern
+    );
+    assert_eq!(TokenKind::Extern.to_string(), "`外部`");
+}

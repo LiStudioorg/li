@@ -95,7 +95,11 @@ pub struct FuncDecl {
     pub return_type: Type,
     /// 是否为异步函数；`异步 函数` 声明的函数调用后得到 `任务<T>`。
     pub is_async: bool,
-    /// 函数体。
+    /// 是否为 C-ABI 外部函数；声明时没有函数体，由宿主动态链接库提供
+    /// 实现。LLVM 后端直接生成 `declare`，VM / JS 后端无法在运行时绑定，
+    /// 会报红色致命错误并拦截编译。
+    pub is_extern: bool,
+    /// 函数体；外部函数允许为空块（解析器保证占位）。
     pub body: Block,
     /// 整个函数声明在源码中的区间。
     pub span: Span,

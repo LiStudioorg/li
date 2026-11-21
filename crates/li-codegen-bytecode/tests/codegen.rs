@@ -108,6 +108,7 @@ fn preserves_escaped_string_and_float_constants() {
                 Instruction::new(Opcode::Print, Vec::new(), Span::default()),
                 Instruction::new(Opcode::ReturnVoid, Vec::new(), Span::default()),
             ],
+            is_extern: false,
         }],
         entry_code: vec![Instruction::new(Opcode::Halt, Vec::new(), Span::default())],
     };
@@ -132,6 +133,7 @@ fn rejects_out_of_range_jump_targets() {
                 vec![InstructionArg::Integer(9)],
                 Span::default(),
             )],
+            is_extern: false,
         }],
         entry_code: vec![Instruction::new(Opcode::Halt, Vec::new(), Span::default())],
     };

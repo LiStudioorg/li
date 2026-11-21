@@ -5,8 +5,8 @@
 //! 的诊断集合，并在语句层使用恐慌模式恢复到 `;` 或 `}` 后继续解析。
 
 use li_ast::{
-    EnumDecl, EnumVariant, FieldDef, FuncDecl, Ident, ImportDecl, Item, ModuleDecl, ModulePath,
-    Param, Program, TypeDecl,
+    Block, EnumDecl, EnumVariant, FieldDef, FuncDecl, Ident, ImportDecl, Item, ModuleDecl,
+    ModulePath, Param, Program, TypeDecl,
 };
 use li_errors::{Diagnostic, DiagnosticBag, Position, Span};
 use li_lexer::{Token, TokenKind};
@@ -128,16 +128,54 @@ impl Parser {
             TokenKind::Import => self.parse_import().map(Item::Import),
             TokenKind::Async => self.parse_function().map(Item::Function),
             TokenKind::Func => self.parse_function().map(Item::Function),
+            TokenKind::Extern => self.parse_extern_function().map(Item::Function),
             TokenKind::Type => self.parse_type_decl().map(Item::Type),
             TokenKind::EnumType => self.parse_enum_decl().map(Item::Enum),
             TokenKind::View => self.parse_view().map(Item::View),
             _ => {
                 self.error_expected(
-                    "`模块`、`导入`、`函数`、`异步 函数`、`类型`、`枚举` 或 `视图`",
+                    "`模块`、`导入`、`函数`、`异步 函数`、`外部 函数`、`类型`、`枚举` 或 `视图`",
                 );
                 None
             }
         }
+    }
+
+    /// 解析 `外部 函数 名称(参数) -> 返回类型;` 形式的 C-ABI 声明。
+    ///
+    /// 外部函数没有函数体；解析器产生一个空块占位，让现有
+    /// `FuncDecl.body` 字段保持非空；语义与 IR 阶段根据 `is_extern`
+    /// 决定是否生成代码。
+    fn parse_extern_function(&mut self) -> Option<FuncDecl> {
+        let extern_token = self.advance();
+        if !self.check(&TokenKind::Func) {
+            self.error_expected("`函数`");
+            return None;
+        }
+        let _function_token = self.advance();
+        let name = self.parse_identifier("外部函数名称")?;
+        self.expect_kind(&TokenKind::LParen, "`(`")?;
+        let params = self.parse_params()?;
+        self.expect_kind(&TokenKind::RParen, "`)`")?;
+        self.expect_kind(&TokenKind::Arrow, "`->`")?;
+        let return_type = self.parse_type()?;
+        self.eat(&TokenKind::Semicolon);
+
+        let span = Span::new(extern_token.span.start, return_type.span.end);
+        let body = Block {
+            stmts: Vec::new(),
+            span,
+        };
+
+        Some(FuncDecl {
+            name,
+            params,
+            return_type,
+            is_async: false,
+            is_extern: true,
+            body,
+            span,
+        })
     }
 
     /// 解析 `枚举 词法类型 { 标识符(字符串), 数字(整数), 符号 }`。
@@ -311,6 +349,7 @@ impl Parser {
             params,
             return_type,
             is_async,
+            is_extern: false,
             body,
             span: Span::new(function_token.span.start, body_end),
         })

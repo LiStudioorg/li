@@ -356,6 +356,8 @@ pub struct FunctionCode {
     pub slots: Vec<String>,
     /// 指令序列。入口函数的第一条指令位于地址 0。
     pub code: Vec<Instruction>,
+    /// 是否为 C-ABI 外部函数；字节码只生成空壳，调用点由后端报致命错误。
+    pub is_extern: bool,
 }
 
 /// 一份完整的字节码程序。

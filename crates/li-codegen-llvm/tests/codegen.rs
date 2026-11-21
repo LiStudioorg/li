@@ -196,3 +196,28 @@ fn generate_reporting_has_no_diagnostics_for_plain_integers() {
     assert!(module.is_some());
     assert!(diagnostics.is_empty(), "不应产生诊断：\n{diagnostics}");
 }
+
+#[test]
+fn declares_extern_functions_with_c_abi_signature() {
+    let source = "\
+外部 函数 putchar(字符: 整数) -> 整数;
+
+函数 主() -> 整数 {
+    返回 putchar(72);
+}";
+
+    let llvm = compile(source);
+
+    assert!(
+        llvm.contains("declare i64 @\"putchar\"(i64)"),
+        "缺少外部函数声明：\n{llvm}"
+    );
+    assert!(
+        llvm.contains("define i64 @\"主\""),
+        "缺少主函数定义：\n{llvm}"
+    );
+    assert!(
+        llvm.contains("call i64 @\"putchar\"(i64"),
+        "主函数应调用外部函数：\n{llvm}"
+    );
+}

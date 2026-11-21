@@ -105,6 +105,51 @@ impl Generator {
     }
 
     fn emit_function(&mut self, output: &mut String, function: &Function) {
+        if function.is_extern {
+            // C-ABI 外部函数：只生成 LLVM `declare`，由宿主动态链接库
+            // 在运行期提供实现。函数体为空块，无需发射代码。
+            let return_type = match llvm_type(&function.return_type) {
+                Ok(ty) => ty,
+                Err(message) => {
+                    self.report(
+                        first_span(function),
+                        format!(
+                            "LLVM 后端暂不支持外部函数「{}」的返回类型：{message}",
+                            function.name
+                        ),
+                    );
+                    return;
+                }
+            };
+            let params = function
+                .params
+                .iter()
+                .map(|param| match llvm_type(&param.ty) {
+                    Ok(ty) => Ok(ty.to_string()),
+                    Err(message) => {
+                        self.report(
+                            first_span(function),
+                            format!(
+                                "LLVM 后端暂不支持外部函数「{}」的参数「{}」：{message}",
+                                function.name, param.name
+                            ),
+                        );
+                        Err(message)
+                    }
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .ok()
+                .unwrap_or_default()
+                .join(", ");
+            writeln!(
+                output,
+                "declare {return_type} @\"{}\"({params})\n",
+                function.name
+            )
+            .expect("写入字符串不会失败");
+            return;
+        }
+
         if function.is_async {
             self.report(
                 first_span(function),
