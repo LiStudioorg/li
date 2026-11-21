@@ -1,8 +1,8 @@
 //! 语句、控制流与匹配模式的语义检查。
 
 use li_ast::{
-    AssignStmt, Expr, ExprKind, Ident, IfStmt, LetStmt, Literal, MatchStmt, Pattern, PatternKind,
-    PrintStmt, ReturnStmt, Stmt, UnsafeStmt, WhileStmt,
+    AssignStmt, Expr, ExprKind, Ident, IfStmt, InlineAsmStmt, LetStmt, Literal, MatchStmt, Pattern,
+    PatternKind, PrintStmt, ReturnStmt, Stmt, UnsafeStmt, WhileStmt,
 };
 use li_errors::{Diagnostic, Span};
 
@@ -45,6 +45,7 @@ impl Analyzer {
             }
             Stmt::Match(stmt) => self.analyze_match(stmt),
             Stmt::Unsafe(stmt) => self.analyze_unsafe(stmt),
+            Stmt::InlineAsm(stmt) => self.analyze_inline_asm(stmt),
             Stmt::Print(stmt) => self.analyze_print(stmt),
         }
     }
@@ -245,6 +246,16 @@ impl Analyzer {
         self.unsafe_depth += 1;
         self.analyze_block(&stmt.body);
         self.unsafe_depth -= 1;
+    }
+
+    /// 检查内联汇编语句：当前版本仅预留语法，语义阶段给出中文致命错误并拦截。
+    fn analyze_inline_asm(&mut self, stmt: &InlineAsmStmt) {
+        let _ = &stmt.template;
+        self.diagnostics.push(
+            Diagnostic::error("内联汇编 暂未实现：当前后端尚不支持内联汇编语句")
+                .with_span(stmt.span)
+                .with_note("该关键字为预留语法，将在后续里程碑提供 LLVM 内联汇编支持"),
+        );
     }
 
     /// 条件表达式必须是 `布尔`；可选值或结果值先去重处理。

@@ -984,3 +984,20 @@ fn rejects_extern_keyword_without_function() {
     let message = errors.to_string();
     assert!(message.contains("`函数`"), "诊断：\n{message}");
 }
+
+#[test]
+fn parses_inline_asm_statement() {
+    let program = parse_ok("函数 主() -> 整数 {\n    内联汇编「mov eax, 1」;\n    返回 0;\n}");
+    let main = function(&program, "主");
+    let Some(li_ast::Stmt::InlineAsm(statement)) = main.body.stmts.first() else {
+        panic!("首条语句应为 内联汇编");
+    };
+    assert_eq!(statement.template, "mov eax, 1");
+}
+
+#[test]
+fn rejects_inline_asm_without_template() {
+    let errors = parse_err("函数 主() -> 整数 {\n    内联汇编;\n    返回 0;\n}");
+    let message = errors.to_string();
+    assert!(message.contains("内联汇编模板字符串"), "诊断：\n{message}");
+}

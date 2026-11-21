@@ -609,6 +609,10 @@ impl<'a> FunctionLowerer<'a> {
             Stmt::Continue(stmt) => self.lower_continue(stmt.span),
             Stmt::Match(stmt) => self.lower_match(stmt),
             Stmt::Unsafe(stmt) => self.lower_block(&stmt.body),
+            Stmt::InlineAsm(stmt) => {
+                // 语义阶段已拦截；这里再兜底一次，避免绕过 Sema 时静默生成错误代码。
+                self.report(stmt.span, "内联汇编 暂未实现：当前后端尚不支持内联汇编语句");
+            }
             Stmt::Print(stmt) => self.lower_print(stmt),
         }
     }

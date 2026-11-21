@@ -725,7 +725,7 @@ fn rewrite_stmt(stmt: &mut Stmt, scope: &Scope, diagnostics: &mut DiagnosticBag)
             rewrite_block(&mut statement.body, scope, diagnostics);
         }
         Stmt::Print(statement) => rewrite_expr(&mut statement.value, scope, diagnostics),
-        Stmt::Break(_) | Stmt::Continue(_) => {}
+        Stmt::Break(_) | Stmt::Continue(_) | Stmt::InlineAsm(_) => {}
     }
 }
 

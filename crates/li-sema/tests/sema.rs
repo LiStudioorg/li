@@ -866,3 +866,19 @@ fn warns_when_declaring_extern_function() {
         "诊断：\n{message}"
     );
 }
+
+#[test]
+fn rejects_inline_asm_as_unimplemented() {
+    let source = "\
+函数 主() -> 整数 {
+    内联汇编「mov eax, 1」;
+    返回 0;
+}";
+
+    let errors = match run_sema(source) {
+        Ok(warnings) => panic!("内联汇编 应被拦截：\n{warnings}"),
+        Err(errors) => errors,
+    };
+    let message = errors.to_string();
+    assert!(message.contains("内联汇编 暂未实现"), "诊断：\n{message}");
+}

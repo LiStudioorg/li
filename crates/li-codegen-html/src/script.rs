@@ -191,6 +191,14 @@ impl<'a> ScriptTranslator<'a> {
                 );
                 None
             }
+            Stmt::InlineAsm(statement) => {
+                self.diagnostics.push(
+                    Diagnostic::error("视图交互代码不支持 `内联汇编` 语句")
+                        .with_span(statement.span)
+                        .with_note("内联汇编 为预留语法，当前后端尚未实现"),
+                );
+                None
+            }
         }
     }
 

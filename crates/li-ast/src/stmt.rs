@@ -39,6 +39,8 @@ pub enum Stmt {
     Match(MatchStmt),
     /// 不安全块，用于隔离底层内存操作。
     Unsafe(UnsafeStmt),
+    /// 内联汇编语句（当前版本仅预留语法，语义阶段报未实现）。
+    InlineAsm(InlineAsmStmt),
     /// 打印语句。
     Print(PrintStmt),
 }
@@ -57,6 +59,7 @@ impl Stmt {
             Self::Continue(stmt) => stmt.span,
             Self::Match(stmt) => stmt.span,
             Self::Unsafe(stmt) => stmt.span,
+            Self::InlineAsm(stmt) => stmt.span,
             Self::Print(stmt) => stmt.span,
         }
     }
@@ -175,6 +178,18 @@ pub struct UnsafeStmt {
     /// 块内语句。
     pub body: Block,
     /// 整个不安全块在源码中的区间。
+    pub span: Span,
+}
+
+/// 内联汇编语句，例如 `内联汇编「mov eax, 1」;`。
+///
+/// 当前版本只保留语法：词法与语法可识别，语义与 IR 阶段给出中文
+/// “暂未实现”提示并拦截，避免在无后端支持时静默生成错误代码。
+#[derive(Clone, Debug, PartialEq)]
+pub struct InlineAsmStmt {
+    /// 汇编模板文本。
+    pub template: String,
+    /// 整条语句在源码中的区间。
     pub span: Span,
 }
 

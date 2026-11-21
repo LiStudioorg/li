@@ -590,6 +590,7 @@ fn keyword_kind(text: &str) -> Option<TokenKind> {
         "输入" | "input" => TokenKind::Input,
         "视图" | "view" => TokenKind::View,
         "不安全" | "unsafe" => TokenKind::Unsafe,
+        "内联汇编" | "asm" | "inline_asm" => TokenKind::InlineAsm,
         "异步" | "async" => TokenKind::Async,
         "等待" | "await" => TokenKind::Await,
         "成功" | "Ok" | "Success" | "ok" | "success" => TokenKind::Success,

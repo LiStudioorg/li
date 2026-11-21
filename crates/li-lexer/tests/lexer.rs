@@ -603,3 +603,10 @@ fn recognizes_extern_keyword() {
     );
     assert_eq!(TokenKind::Extern.to_string(), "`外部`");
 }
+
+#[test]
+fn recognizes_inline_asm_keyword() {
+    let tokens = kinds("内联汇编「mov eax, 1」;");
+    assert_eq!(tokens[0], TokenKind::InlineAsm);
+    assert_eq!(TokenKind::InlineAsm.to_string(), "`内联汇编`");
+}

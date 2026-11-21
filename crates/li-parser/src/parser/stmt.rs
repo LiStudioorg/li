@@ -1,8 +1,9 @@
 //! 语句、语句块、控制流与匹配模式解析。
 
 use li_ast::{
-    AssignStmt, Block, BreakStmt, ContinueStmt, ExprStmt, Ident, IfStmt, LetStmt, Literal,
-    MatchArm, MatchStmt, Pattern, PatternKind, PrintStmt, ReturnStmt, Stmt, UnsafeStmt, WhileStmt,
+    AssignStmt, Block, BreakStmt, ContinueStmt, ExprStmt, Ident, IfStmt, InlineAsmStmt, LetStmt,
+    Literal, MatchArm, MatchStmt, Pattern, PatternKind, PrintStmt, ReturnStmt, Stmt, UnsafeStmt,
+    WhileStmt,
 };
 use li_errors::Span;
 use li_lexer::TokenKind;
@@ -50,6 +51,7 @@ impl Parser {
             TokenKind::Return => self.parse_return_statement(),
             TokenKind::Match => self.parse_match_statement(),
             TokenKind::Unsafe => self.parse_unsafe_statement(),
+            TokenKind::InlineAsm => self.parse_inline_asm_statement(),
             TokenKind::Print => self.parse_print_statement(),
             _ => self.parse_expression_statement(),
         }
@@ -122,6 +124,28 @@ impl Parser {
         let span = Span::new(unsafe_token.span.start, body.span.end);
 
         Some(Stmt::Unsafe(UnsafeStmt { body, span }))
+    }
+
+    /// 解析 `内联汇编「模板文本」;` 语句。
+    ///
+    /// 当前版本只保留语法：语义与 IR 阶段会给出中文“暂未实现”提示并
+    /// 拦截，避免在无后端支持时静默生成错误代码。
+    fn parse_inline_asm_statement(&mut self) -> Option<Stmt> {
+        let asm_token = self.advance();
+        let template = match &self.peek().kind {
+            TokenKind::String(value) => value.clone(),
+            _ => {
+                self.error_expected("内联汇编模板字符串 `「...」`");
+                return None;
+            }
+        };
+        let template_token = self.advance();
+        let end = self.finish_statement(template_token.span.end);
+
+        Some(Stmt::InlineAsm(InlineAsmStmt {
+            template,
+            span: Span::new(asm_token.span.start, end),
+        }))
     }
 
     fn parse_break_statement(&mut self) -> Option<Stmt> {
