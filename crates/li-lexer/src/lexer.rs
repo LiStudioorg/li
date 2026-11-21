@@ -68,6 +68,12 @@ impl<'a> Lexer<'a> {
                 self.advance();
             }
 
+            // `#无垃圾回收` 是文件头指令，不是注释；遇到时停止跳过，
+            // 交给 `next_token` 产生 `NoGc` Token。
+            if self.starts_with("#无垃圾回收") {
+                break;
+            }
+
             if self.starts_with("#*") {
                 self.skip_block_comment(CommentStyle::Hash);
             } else if self.starts_with("/*") {
@@ -130,6 +136,15 @@ impl<'a> Lexer<'a> {
     /// 读取下一个 Token；无法恢复的错误已经写入诊断集合。
     fn next_token(&mut self, start: Position) -> Option<TokenKind> {
         let ch = self.peek()?;
+
+        // 文件头指令 `#无垃圾回收`（no_std）：只允许出现在文件最前端，
+        // 由语法分析器校验位置。词法阶段把它与 `#` 注释区分开。
+        if self.starts_with("#无垃圾回收") {
+            for _ in "#无垃圾回收".chars() {
+                self.advance();
+            }
+            return Some(TokenKind::NoGc);
+        }
 
         if ch == '「' {
             return self.lex_string(start);
@@ -564,6 +579,7 @@ fn keyword_kind(text: &str) -> Option<TokenKind> {
         "跳出" | "break" => TokenKind::Break,
         "继续" | "continue" => TokenKind::Continue,
         "匹配" | "match" => TokenKind::Match,
+        "枚举项" | "variant" => TokenKind::Variant,
         "模块" | "mod" | "module" => TokenKind::Module,
         "导入" | "use" | "import" => TokenKind::Import,
         "真" | "true" => TokenKind::True,
@@ -587,6 +603,7 @@ fn keyword_kind(text: &str) -> Option<TokenKind> {
         "字典" | "dictionary" | "map" => TokenKind::DictionaryType,
         "可选" | "option" | "optional" => TokenKind::OptionalType,
         "结果" | "result" => TokenKind::ResultType,
+        "枚举" | "enum" => TokenKind::EnumType,
         "原生指针" | "rawptr" | "raw_pointer" | "ptr" => TokenKind::RawPointerType,
         "任务" | "task" => TokenKind::TaskType,
         "通道" | "channel" => TokenKind::ChannelType,

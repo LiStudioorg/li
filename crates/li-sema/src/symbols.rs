@@ -83,3 +83,13 @@ pub(crate) struct StructInfo {
     /// 字段名称到字段类型的映射。
     pub fields: HashMap<String, Ty>,
 }
+
+/// 枚举信息：枚举项名称 → 载荷类型列表。
+///
+/// 匹配时 Sema 要求每个枚举项都必须被某个分支覆盖（穷尽性检查）；
+/// 未覆盖的项产生红色 `Error` 诊断。
+#[derive(Clone, Debug, Default)]
+pub(crate) struct EnumInfo {
+    /// 枚举项名称到载荷类型列表的映射，按声明顺序保存。
+    pub variants: Vec<(String, Vec<Ty>)>,
+}

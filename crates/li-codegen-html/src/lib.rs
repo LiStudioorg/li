@@ -75,7 +75,7 @@ fn collect_views<'a>(items: &'a [Item], views: &mut Vec<&'a ViewDecl>) {
         match item {
             Item::View(view) => views.push(view),
             Item::Module(module) => collect_views(&module.items, views),
-            Item::Import(_) | Item::Function(_) | Item::Type(_) => {}
+            Item::Import(_) | Item::Function(_) | Item::Type(_) | Item::Enum(_) => {}
         }
     }
 }

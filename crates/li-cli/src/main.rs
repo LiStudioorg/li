@@ -93,22 +93,43 @@ fn main() -> ExitCode {
             compile_to_llvm(Path::new(&args[1]))
         }
         "编译-原生" => {
-            if args.len() < 2 || args.len() > 4 {
-                eprintln!("错误：命令「编译-原生」需要一个 .li 文件参数与可选 --target 参数");
+            if args.len() < 2 {
+                eprintln!(
+                    "错误：命令「编译-原生」需要一个 .li 文件参数（可选 --target、--release）"
+                );
                 print_usage();
                 return ExitCode::FAILURE;
             }
-            let target = match args.get(2) {
-                Some(flag) if flag == "--target" => match args.get(3) {
-                    Some(target) => Some(target.clone()),
-                    None => {
-                        eprintln!("错误：--target 参数缺少目标三元组");
+
+            let mut target: Option<String> = None;
+            let mut release = false;
+            let mut index = 2;
+            while index < args.len() {
+                match args[index].as_str() {
+                    "--target" => match args.get(index + 1) {
+                        Some(triple) => {
+                            target = Some(triple.clone());
+                            index += 2;
+                        }
+                        None => {
+                            eprintln!("错误：--target 参数缺少目标三元组");
+                            return ExitCode::FAILURE;
+                        }
+                    },
+                    "--release" => {
+                        release = true;
+                        index += 1;
+                    }
+                    other => {
+                        eprintln!(
+                            "错误：无法识别的参数「{other}」；支持 --target <三元组> 与 --release"
+                        );
                         return ExitCode::FAILURE;
                     }
-                },
-                _ => None,
-            };
-            compile_to_native(Path::new(&args[1]), target.as_deref())
+                }
+            }
+
+            compile_to_native(Path::new(&args[1]), target.as_deref(), release)
         }
         "编译-html" => {
             if args.len() != 2 {
@@ -434,12 +455,13 @@ fn compile_to_llvm(input: &Path) -> ExitCode {
         Err(code) => return code,
     };
 
-    let llvm_ir = match li_codegen_llvm::generate(&ir) {
-        Ok(llvm_ir) => llvm_ir,
-        Err(errors) => {
-            eprintln!("{errors}");
-            return ExitCode::FAILURE;
-        }
+    let (module, diagnostics) = li_codegen_llvm::generate_reporting(&ir, None);
+    if !diagnostics.is_empty() {
+        eprintln!("{}", li_errors::render(&diagnostics, true));
+    }
+    let llvm_ir = match module {
+        Some(llvm_ir) => llvm_ir,
+        None => return ExitCode::FAILURE,
     };
     let output = input.with_extension("ll");
 
@@ -458,7 +480,10 @@ fn compile_to_llvm(input: &Path) -> ExitCode {
 
 /// 把 li 源码通过 clang 链接为原生二进制；指定 `--target` 时启用静态链接
 /// 以支持交叉编译（Android / Termux / musl 等缺少 glibc 的目标）。
-fn compile_to_native(input: &Path, target: Option<&str>) -> ExitCode {
+///
+/// `--release` 会启用空间优化（`-Os`）、按节裁剪（`-ffunction-sections`
+/// 与 `--gc-sections`）并剥离符号表（`-s`），以尽量减小二进制体积。
+fn compile_to_native(input: &Path, target: Option<&str>, release: bool) -> ExitCode {
     // Android 目标必须依赖 NDK 提供的 bionic libc 与 crt，宿主机的
     // glibc sysroot 无法替代，因此在编译前先做一次环境预检。
     if let Some(triple) = target {
@@ -484,15 +509,19 @@ fn compile_to_native(input: &Path, target: Option<&str>) -> ExitCode {
     };
 
     let llvm_ir = match target {
-        Some(triple) => li_codegen_llvm::generate_for_target(&ir, triple),
-        None => li_codegen_llvm::generate(&ir),
+        Some(triple) => li_codegen_llvm::generate_reporting(&ir, Some(triple)),
+        None => li_codegen_llvm::generate_reporting(&ir, None),
     };
-    let llvm_ir = match llvm_ir {
-        Ok(llvm_ir) => llvm_ir,
-        Err(errors) => {
-            eprintln!("{errors}");
-            return ExitCode::FAILURE;
-        }
+    let (module, diagnostics) = llvm_ir;
+
+    // LLVM 后端的黄色警告（例如"暂只支持纯标签枚举"）要打印出来，
+    // 但按强制警告机制不得中断编译；只有致命错误才拦截。
+    if !diagnostics.is_empty() {
+        eprintln!("{}", li_errors::render(&diagnostics, true));
+    }
+    let llvm_ir = match module {
+        Some(llvm_ir) => llvm_ir,
+        None => return ExitCode::FAILURE,
     };
 
     let llvm_path = input.with_extension("ll");
@@ -513,11 +542,19 @@ fn compile_to_native(input: &Path, target: Option<&str>) -> ExitCode {
 
     let compiler = "clang";
     let mut command = Command::new(compiler);
-    command
-        .arg("-O2")
-        .arg(&llvm_path)
-        .arg("-o")
-        .arg(&executable);
+    if release {
+        // 空间优化：-Os 优先减小体积；按函数/数据分节后由链接器裁剪
+        // 未引用内容；-s 剥离符号表与调试信息。
+        command
+            .arg("-Os")
+            .arg("-ffunction-sections")
+            .arg("-fdata-sections")
+            .arg("-Wl,--gc-sections")
+            .arg("-Wl,-s");
+    } else {
+        command.arg("-O2");
+    }
+    command.arg(&llvm_path).arg("-o").arg(&executable);
 
     if let Some(triple) = target {
         command.arg(format!("--target={triple}"));
@@ -838,7 +875,10 @@ fn contains_view(items: &[li_ast::Item]) -> bool {
     items.iter().any(|item| match item {
         li_ast::Item::View(_) => true,
         li_ast::Item::Module(module) => contains_view(&module.items),
-        li_ast::Item::Import(_) | li_ast::Item::Function(_) | li_ast::Item::Type(_) => false,
+        li_ast::Item::Import(_)
+        | li_ast::Item::Function(_)
+        | li_ast::Item::Type(_)
+        | li_ast::Item::Enum(_) => false,
     })
 }
 

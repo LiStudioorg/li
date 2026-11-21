@@ -40,6 +40,10 @@ pub fn lower(program: &AstProgram) -> Result<Program, DiagnosticBag> {
 #[derive(Default)]
 struct TypeContext {
     structs: HashMap<String, StructLayout>,
+    /// 枚举名称 → 枚举项列表（每项是 名称 → 载荷类型 的映射）。
+    /// LLVM 后端用这个判断"纯标签枚举"（所有枚举项都没有载荷）；
+    /// 纯标签枚举降级为 `i64` 判别符，带载荷的报黄色警告拦截。
+    enums: HashMap<String, Vec<(String, Vec<IrType>)>>,
     functions: HashMap<String, Signature>,
     /// 声明为 `异步 函数` 的函数名；调用它们的表达式类型为 `任务<T>`。
     async_functions: HashSet<String>,
@@ -68,6 +72,8 @@ impl TypeContext {
             TypeKind::Named(ident) => {
                 if self.structs.contains_key(&ident.name) {
                     IrType::Struct(ident.name.clone())
+                } else if self.enums.contains_key(&ident.name) {
+                    IrType::Enum(ident.name.clone())
                 } else {
                     IrType::Unknown
                 }
@@ -115,9 +121,11 @@ impl Lowerer {
     fn lower_program(&mut self, program: &AstProgram) -> Program {
         let mut functions = Vec::new();
         let mut structs = Vec::new();
-        collect_declarations(&program.items, &mut functions, &mut structs);
+        let mut enums = Vec::new();
+        collect_declarations(&program.items, &mut functions, &mut structs, &mut enums);
 
         self.register_structs(&structs);
+        self.register_enums(&enums);
         self.register_functions(&functions);
 
         let mut seen_structs = HashSet::new();
@@ -148,6 +156,31 @@ impl Lowerer {
             structs: ir_structs,
             functions: ir_functions,
             uses_unsafe: items_contain_unsafe(&program.items),
+            no_gc: program.no_gc,
+        }
+    }
+
+    /// 登记枚举声明；把每个枚举项的载荷类型解析为 IR 类型。
+    ///
+    /// LLVM 后端用 `enums` 表判断"纯标签枚举"（所有枚举项都没有载荷）；
+    /// 纯标签枚举降级为 `i64` 判别符，带载荷的由 LLVM 后端报黄色警告拦截。
+    fn register_enums(&mut self, declarations: &[&li_ast::EnumDecl]) {
+        for declaration in declarations {
+            let variants = declaration
+                .variants
+                .iter()
+                .map(|variant| {
+                    let payload = variant
+                        .args
+                        .iter()
+                        .map(|ty| self.resolve_type(ty))
+                        .collect();
+                    (variant.name.name.clone(), payload)
+                })
+                .collect();
+            self.context
+                .enums
+                .insert(declaration.name.name.clone(), variants);
         }
     }
 
@@ -260,6 +293,8 @@ impl Lowerer {
             TypeKind::Named(ident) => {
                 if self.context.structs.contains_key(&ident.name) {
                     IrType::Struct(ident.name.clone())
+                } else if self.context.enums.contains_key(&ident.name) {
+                    IrType::Enum(ident.name.clone())
                 } else {
                     self.report(ident.span, format!("未知类型「{}」", ident.name));
                     IrType::Unknown
@@ -279,12 +314,14 @@ fn collect_declarations<'a>(
     items: &'a [Item],
     functions: &mut Vec<&'a FuncDecl>,
     structs: &mut Vec<&'a TypeDecl>,
+    enums: &mut Vec<&'a li_ast::EnumDecl>,
 ) {
     for item in items {
         match item {
             Item::Function(function) => functions.push(function),
             Item::Type(declaration) => structs.push(declaration),
-            Item::Module(module) => collect_declarations(&module.items, functions, structs),
+            Item::Enum(declaration) => enums.push(declaration),
+            Item::Module(module) => collect_declarations(&module.items, functions, structs, enums),
             Item::Import(_) | Item::View(_) => {}
         }
     }
@@ -757,6 +794,40 @@ impl<'a> FunctionLowerer<'a> {
                     );
                     self.start_block(next);
                 }
+                PatternKind::Enum { variant, .. } => {
+                    // 枚举项匹配：用 `== 枚举项索引` 作为分支条件。
+                    // 枚举类型从待匹配值的 IR 类型取得；索引等于该枚举项
+                    // 在声明顺序中的位置。载荷绑定在 bind_pattern 中处理。
+                    let discriminant = match &scrutinee.ty {
+                        IrType::Enum(enum_name) => self
+                            .context
+                            .enums
+                            .get(enum_name)
+                            .and_then(|variants| {
+                                variants.iter().position(|(name, _)| name == &variant.name)
+                            })
+                            .unwrap_or(0) as i64,
+                        _ => 0,
+                    };
+                    let discriminant = Operand::Constant(Constant::Integer(discriminant));
+                    let condition = self.emit_binary(
+                        BinaryOp::Equal,
+                        scrutinee.operand.clone(),
+                        discriminant,
+                        IrType::Bool,
+                        arm.span,
+                    );
+                    let next = self.new_label();
+                    self.terminate(
+                        Terminator::Branch {
+                            condition,
+                            then_label: arm_labels[index],
+                            else_label: next,
+                        },
+                        arm.span,
+                    );
+                    self.start_block(next);
+                }
             }
         }
 
@@ -843,6 +914,23 @@ impl<'a> FunctionLowerer<'a> {
                         pattern.span,
                     );
                 }
+            }
+            PatternKind::Enum { variant, bindings } => {
+                // 枚举项的载荷绑定：当前 IR 层不做载荷解构（M13 后续阶段完善）；
+                // 把整个枚举值绑定为枚举项名，载荷通过后续阶段处理。
+                for binding in bindings.iter().filter_map(|b| b.clone()) {
+                    let ty = value.ty.clone();
+                    let name = self.declare_local(&binding.name, ty.clone(), false);
+                    self.emit(
+                        Instruction::Copy {
+                            dest: Place::Local(name),
+                            src: value.operand.clone(),
+                            ty,
+                        },
+                        pattern.span,
+                    );
+                }
+                let _ = variant;
             }
         }
     }
@@ -1020,6 +1108,50 @@ impl<'a> FunctionLowerer<'a> {
                 }
             }
             ExprKind::Parenthesized(inner) => self.lower_expr(inner),
+            ExprKind::EnumVariant(variant) => {
+                // 枚举项构造器：
+                // - 纯标签枚举（所有项都没有载荷）：降级为 `i64` 判别符，
+                //   取枚举项在声明顺序中的索引；LLVM 后端直接支持，
+                //   运行期可比较、可分支。
+                // - 带载荷的枚举：实参按顺序求值，判别符同样用索引，
+                //   但载荷暂不参与 IR；LLVM 后端会对枚举类型报黄色警告，
+                //   提示"带载荷枚举运行期行为未定义，建议改用 VM/JS 后端"。
+                let discriminant = variant
+                    .enum_name
+                    .as_ref()
+                    .and_then(|ident| self.context.enums.get(&ident.name))
+                    .and_then(|variants| {
+                        variants
+                            .iter()
+                            .position(|(name, _)| name == &variant.name.name)
+                    })
+                    .unwrap_or(0) as i64;
+
+                for arg in &variant.args {
+                    let _ = self.lower_expr(arg);
+                }
+
+                let ty = match &variant.enum_name {
+                    Some(ident) if self.context.enums.contains_key(&ident.name) => {
+                        IrType::Enum(ident.name.clone())
+                    }
+                    _ => IrType::Integer,
+                };
+
+                let dest = self.new_temp();
+                self.emit(
+                    Instruction::Const {
+                        dest: dest.clone(),
+                        value: Constant::Integer(discriminant),
+                        ty: ty.clone(),
+                    },
+                    expr.span,
+                );
+                TypedValue {
+                    operand: Operand::Place(dest),
+                    ty,
+                }
+            }
         }
     }
 
@@ -1383,7 +1515,7 @@ fn items_contain_unsafe(items: &[Item]) -> bool {
     items.iter().any(|item| match item {
         Item::Function(function) => block_contains_unsafe(&function.body),
         Item::Module(module) => items_contain_unsafe(&module.items),
-        Item::Import(_) | Item::Type(_) | Item::View(_) => false,
+        Item::Import(_) | Item::Type(_) | Item::View(_) | Item::Enum(_) => false,
     })
 }
 

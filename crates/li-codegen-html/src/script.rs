@@ -283,6 +283,11 @@ impl<'a> ScriptTranslator<'a> {
                 self.unsupported("`等待` 表达式", expression.span);
                 return None;
             }
+            ExprKind::EnumVariant(_) => {
+                // 视图交互代码不支持枚举构造器。
+                self.unsupported("枚举项构造器", expression.span);
+                return None;
+            }
         };
 
         Some(code)

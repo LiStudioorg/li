@@ -1,6 +1,6 @@
 //! 表达式解析：Pratt 优先级攀升与后缀链。
 
-use li_ast::{BinaryOp, Expr, ExprKind, Ident, Literal, UnaryOp};
+use li_ast::{BinaryOp, EnumVariantExpr, Expr, ExprKind, Ident, Literal, UnaryOp};
 use li_errors::Span;
 use li_lexer::TokenKind;
 
@@ -96,6 +96,29 @@ impl Parser {
         let mut expression = self.parse_primary()?;
 
         loop {
+            // 枚举项构造器 + 调用：`词法类型::标识符(「abc」)`；
+            // 把枚举项构造器的载荷实参填上。
+            if matches!(
+                &expression.kind,
+                ExprKind::EnumVariant(variant) if variant.args.is_empty()
+            ) && self.check(&TokenKind::LParen)
+            {
+                self.advance();
+                let args = self.parse_expression_list(&TokenKind::RParen)?;
+                let close = self.expect_kind(&TokenKind::RParen, "`)`")?;
+                let span = Span::new(expression.span.start, close.span.end);
+                let ExprKind::EnumVariant(variant) = &expression.kind else {
+                    unreachable!("EnumVariant 分支");
+                };
+                let variant = EnumVariantExpr {
+                    enum_name: variant.enum_name.clone(),
+                    name: variant.name.clone(),
+                    args,
+                };
+                expression = Expr::new(ExprKind::EnumVariant(Box::new(variant)), span);
+                continue;
+            }
+
             if self.check(&TokenKind::LParen) {
                 self.advance();
                 let args = self.parse_expression_list(&TokenKind::RParen)?;
@@ -131,6 +154,41 @@ impl Parser {
                         object: Box::new(expression),
                         field,
                     },
+                    span,
+                );
+            } else if self.eat(&TokenKind::ColonColon) {
+                // 枚举项构造器：`词法类型::标识符(「abc」)`；
+                // 与跨模块导入路径（`工具::数学`）在词法层面同形，
+                // 由 Sema 阶段根据"该名称是否属于某个枚举的枚举项"
+                // 进一步区分。
+                let token = self.peek().clone();
+                let field_name = match &token.kind {
+                    TokenKind::Identifier(name) => name.clone(),
+                    other => match other.keyword_name() {
+                        Some(name) => name.to_owned(),
+                        None => {
+                            self.error_expected("枚举项名称");
+                            return None;
+                        }
+                    },
+                };
+                let _ = self.advance();
+                let field = Ident::new(field_name, token.span);
+                let span = Span::new(expression.span.start, token.span.end);
+
+                // `::` 左侧是枚举类型名（例如 `节点`）；保留下来，
+                // 让 Sema 与 IR 能确定枚举项所属的枚举与判别符索引。
+                let enum_name = match &expression.kind {
+                    ExprKind::Identifier(ident) => Some(ident.clone()),
+                    _ => None,
+                };
+
+                expression = Expr::new(
+                    ExprKind::EnumVariant(Box::new(EnumVariantExpr {
+                        enum_name,
+                        name: field,
+                        args: Vec::new(),
+                    })),
                     span,
                 );
             } else if self.check(&TokenKind::LBracket) {

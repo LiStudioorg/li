@@ -46,6 +46,8 @@ pub enum TokenKind {
     Continue,
     /// `匹配` / `match`。
     Match,
+    /// `枚举项` / `variant`，用于匹配模式中表示"这是某个枚举的某项"。
+    Variant,
     /// `成功` / `ok`。
     Success,
     /// `失败` / `err`。
@@ -92,12 +94,16 @@ pub enum TokenKind {
     OptionalType,
     /// `结果` / `result`。
     ResultType,
+    /// `枚举` / `enum`，用户自定义枚举类型。
+    EnumType,
     /// `原生指针` / `rawptr` / `ptr`。
     RawPointerType,
     /// `任务` / `task`，异步函数调用返回的句柄类型。
     TaskType,
     /// `@`，检查注解的前缀符号，例如 `@检查(不可变性: 报错)`。
     At,
+    /// `#无垃圾回收` 文件头指令，关闭垃圾回收、面向 no_std 目标。
+    NoGc,
     /// `通道` / `channel`，并发通道类型（当前版本仅预留）。
     ChannelType,
     /// `共享` / `shared`，共享所有权类型（当前版本仅预留）。
@@ -186,6 +192,7 @@ impl TokenKind {
             Self::Break => "跳出",
             Self::Continue => "继续",
             Self::Match => "匹配",
+            Self::Variant => "枚举项",
             Self::Success => "成功",
             Self::Failure => "失败",
             Self::Module => "模块",
@@ -208,9 +215,11 @@ impl TokenKind {
             Self::DictionaryType => "字典",
             Self::OptionalType => "可选",
             Self::ResultType => "结果",
+            Self::EnumType => "枚举",
             Self::RawPointerType => "原生指针",
             Self::TaskType => "任务",
             Self::At => "@",
+            Self::NoGc => "#无垃圾回收",
             Self::ChannelType => "通道",
             Self::SharedType => "共享",
             Self::BorrowType => "借用",
@@ -250,6 +259,7 @@ impl fmt::Display for TokenKind {
             Self::Break => f.write_str("`跳出`"),
             Self::Continue => f.write_str("`继续`"),
             Self::Match => f.write_str("`匹配`"),
+            Self::Variant => f.write_str("`枚举项`"),
             Self::Success => f.write_str("`成功`"),
             Self::Failure => f.write_str("`失败`"),
             Self::Module => f.write_str("`模块`"),
@@ -273,9 +283,11 @@ impl fmt::Display for TokenKind {
             Self::DictionaryType => f.write_str("`字典`"),
             Self::OptionalType => f.write_str("`可选`"),
             Self::ResultType => f.write_str("`结果`"),
+            Self::EnumType => f.write_str("`枚举`"),
             Self::RawPointerType => f.write_str("`原生指针`"),
             Self::TaskType => f.write_str("`任务`"),
             Self::At => f.write_str("`@`"),
+            Self::NoGc => f.write_str("`#无垃圾回收`"),
             Self::ChannelType => f.write_str("`通道`"),
             Self::SharedType => f.write_str("`共享`"),
             Self::BorrowType => f.write_str("`借用`"),

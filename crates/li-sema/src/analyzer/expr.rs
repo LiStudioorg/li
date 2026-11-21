@@ -15,7 +15,16 @@ impl Analyzer {
     /// 推导表达式类型，并在发现错误时记录诊断。
     pub(super) fn infer_expr(&mut self, expr: &Expr) -> Ty {
         match &expr.kind {
-            ExprKind::Literal(literal) => Self::literal_type(literal),
+            ExprKind::Literal(literal) => {
+                if self.no_gc && matches!(literal, li_ast::Literal::String(_)) {
+                    self.diagnostics.push(
+                        Diagnostic::warning("`#无垃圾回收` 模式下字符串字面量仍依赖堆分配")
+                            .with_span(expr.span)
+                            .with_note("no_std 目标建议使用 `原生指针` 与 `不安全` 块管理内存"),
+                    );
+                }
+                Self::literal_type(literal)
+            }
             ExprKind::Identifier(ident) => self.infer_identifier(ident),
             ExprKind::Input => Ty::String,
             ExprKind::Await(inner) => self.infer_await(expr, inner),
@@ -24,8 +33,14 @@ impl Analyzer {
             ExprKind::Call { callee, args } => self.infer_call(expr, callee, args),
             ExprKind::FieldAccess { object, field } => self.infer_field_access(object, field),
             ExprKind::Index { object, index } => self.infer_index(object, index),
-            ExprKind::ListLiteral(items) => self.infer_list_literal(items),
+            ExprKind::ListLiteral(items) => self.infer_list_literal(expr.span, items),
             ExprKind::Parenthesized(inner) => self.infer_expr(inner),
+            ExprKind::EnumVariant(variant) => self.infer_enum_variant(
+                variant.enum_name.as_ref(),
+                &variant.name,
+                &variant.args,
+                expr.span,
+            ),
         }
     }
 
@@ -91,6 +106,77 @@ impl Analyzer {
                 Ty::Error
             }
         }
+    }
+
+    /// 推导枚举项构造器的类型：`词法类型::标识符(「abc」)` 返回
+    /// `Ty::Enum(词法类型)`，并校验枚举项存在性与载荷类型。
+    ///
+    /// 实参本身会被推导，以便发现实参内部的独立错误；枚举类型名缺省
+    /// （没有 `::` 前缀）时返回 `Ty::Error`，交给类型标注推断。
+    fn infer_enum_variant(
+        &mut self,
+        enum_name: Option<&Ident>,
+        name: &Ident,
+        args: &[Expr],
+        span: li_errors::Span,
+    ) -> Ty {
+        let arg_types: Vec<Ty> = args.iter().map(|arg| self.infer_expr(arg)).collect();
+
+        let Some(enum_ident) = enum_name else {
+            return Ty::Error;
+        };
+
+        let info = match self.enums.get(&enum_ident.name) {
+            Some(info) => info.clone(),
+            None => {
+                self.diagnostics.push(
+                    Diagnostic::error(format!("未知枚举「{}」", enum_ident.name))
+                        .with_span(enum_ident.span)
+                        .with_expected("已声明的枚举类型")
+                        .with_actual(format!("`{}`", enum_ident.name)),
+                );
+                return Ty::Error;
+            }
+        };
+
+        let payload = info
+            .variants
+            .iter()
+            .find(|(variant, _)| variant == &name.name)
+            .map(|(_, payload)| payload.clone());
+
+        let Some(payload) = payload else {
+            self.diagnostics.push(
+                Diagnostic::error(format!(
+                    "枚举「{}」没有枚举项「{}」",
+                    enum_ident.name, name.name
+                ))
+                .with_span(span)
+                .with_expected("已声明的枚举项")
+                .with_actual(format!("`{}`", name.name)),
+            );
+            return Ty::Enum(enum_ident.name.clone());
+        };
+
+        if payload.len() != arg_types.len() {
+            self.diagnostics.push(
+                Diagnostic::error(format!("枚举项「{}」的载荷数量不匹配", name.name))
+                    .with_span(span)
+                    .with_expected(format!("{} 个参数", payload.len()))
+                    .with_actual(format!("{} 个参数", arg_types.len())),
+            );
+        } else {
+            for (index, (expected, actual)) in payload.iter().zip(&arg_types).enumerate() {
+                self.check_compatible(
+                    args[index].span,
+                    expected,
+                    actual,
+                    &format!("枚举项「{}」第 {} 个载荷参数", name.name, index + 1),
+                );
+            }
+        }
+
+        Ty::Enum(enum_ident.name.clone())
     }
 
     fn infer_unary(&mut self, operand: &Expr, op: UnaryOp) -> Ty {
@@ -215,6 +301,17 @@ impl Analyzer {
     fn infer_call(&mut self, expr: &Expr, callee: &Expr, args: &[Expr]) -> Ty {
         if let ExprKind::FieldAccess { object, field } = &callee.kind {
             return self.infer_builtin_call(object, field, args);
+        }
+
+        // 枚举项构造器（`词法类型::标识符(「abc」)`）的"调用"形式；
+        // 实参在 `infer_enum_variant` 内部推导，并据此校验载荷类型。
+        if let ExprKind::EnumVariant(variant) = &callee.kind {
+            return self.infer_enum_variant(
+                variant.enum_name.as_ref(),
+                &variant.name,
+                args,
+                expr.span,
+            );
         }
 
         let function_name = match &callee.kind {
@@ -644,7 +741,15 @@ impl Analyzer {
         }
     }
 
-    fn infer_list_literal(&mut self, items: &[Expr]) -> Ty {
+    fn infer_list_literal(&mut self, span: li_errors::Span, items: &[Expr]) -> Ty {
+        if self.no_gc {
+            self.diagnostics.push(
+                Diagnostic::warning("`#无垃圾回收` 模式下列表字面量依赖堆分配")
+                    .with_span(span)
+                    .with_note("no_std 目标建议改用固定大小缓冲区与 `原生指针`"),
+            );
+        }
+
         let mut element_ty: Option<Ty> = None;
 
         for item in items {

@@ -7,10 +7,10 @@ mod stmt;
 
 use std::collections::{HashMap, HashSet};
 
-use li_ast::{Block, FuncDecl, Item, Literal, Program, Type, TypeDecl, TypeKind};
+use li_ast::{Block, EnumDecl, FuncDecl, Item, Literal, Program, Type, TypeDecl, TypeKind};
 use li_errors::{Diagnostic, DiagnosticBag, Span};
 
-use crate::symbols::{FunctionSignature, StructInfo, SymbolTable, Variable};
+use crate::symbols::{EnumInfo, FunctionSignature, StructInfo, SymbolTable, Variable};
 use crate::ty::Ty;
 
 /// 对整份程序执行语义分析。
@@ -44,6 +44,8 @@ struct Analyzer {
     functions: HashMap<String, FunctionSignature>,
     /// 全程序结构体定义。
     structs: HashMap<String, StructInfo>,
+    /// 全程序枚举定义：名称 → 枚举项载荷列表。
+    enums: HashMap<String, EnumInfo>,
     /// 当前变量作用域栈。
     symbols: SymbolTable,
     /// 收集到的语义诊断。
@@ -56,6 +58,8 @@ struct Analyzer {
     unsafe_depth: usize,
     /// 当前是否处于异步函数体内；用于 `等待` 与 `网络.获取` 的类型推导。
     current_async: bool,
+    /// 是否启用了 `#无垃圾回收`（no_std）模式。
+    no_gc: bool,
 }
 
 impl Analyzer {
@@ -63,23 +67,71 @@ impl Analyzer {
         Self {
             functions: HashMap::new(),
             structs: HashMap::new(),
+            enums: HashMap::new(),
             symbols: SymbolTable::default(),
             diagnostics: DiagnosticBag::new(),
             current_return: None,
             loop_depth: 0,
             unsafe_depth: 0,
             current_async: false,
+            no_gc: false,
         }
     }
 
     /// 先登记声明，再检查所有函数体。
     fn run(&mut self, program: &Program) {
+        self.no_gc = program.no_gc;
         let mut raw = RawDeclarations::default();
         collect_raw_declarations(&program.items, &mut raw);
 
         self.register_structs(&raw.structs);
+        self.register_enums(&raw.enums);
         self.register_functions(&raw.functions);
         self.analyze_items(&program.items);
+    }
+
+    /// 登记枚举声明，把每个枚举项的载荷类型解析为语义类型。
+    ///
+    /// 与结构体登记相同，分两步：先登记全部枚举名称，再解析载荷类型；
+    /// 这样枚举项的载荷可以引用后面声明的枚举或结构体。
+    fn register_enums(&mut self, declarations: &[&EnumDecl]) {
+        let mut unique: HashMap<String, &EnumDecl> = HashMap::new();
+        for declaration in declarations {
+            if unique.contains_key(&declaration.name.name) {
+                self.report(
+                    declaration.name.span,
+                    format!("重复声明枚举「{}」", declaration.name.name),
+                );
+            } else {
+                unique.insert(declaration.name.name.clone(), declaration);
+            }
+        }
+
+        // 先登记全部名称，载荷才能引用后面声明的枚举或结构体。
+        for name in unique.keys() {
+            self.enums.insert(
+                name.clone(),
+                EnumInfo {
+                    variants: Vec::new(),
+                },
+            );
+        }
+
+        for (name, declaration) in &unique {
+            let mut variants = Vec::with_capacity(declaration.variants.len());
+            for variant in &declaration.variants {
+                let payload = variant
+                    .args
+                    .iter()
+                    .map(|ty| self.resolve_type(ty))
+                    .collect();
+                variants.push((variant.name.name.clone(), payload));
+            }
+
+            if let Some(info) = self.enums.get_mut(name) {
+                info.variants = variants;
+            }
+        }
     }
 
     /// 登记结构体名称，并解析字段类型。
@@ -155,14 +207,34 @@ impl Analyzer {
     }
 
     /// 把 AST 类型解析为语义类型。
+    /// 在 `#无垃圾回收` 模式下，对依赖 GC 堆分配的类型发出黄色警告。
+    /// 按强制警告机制，警告不阻断编译。
+    fn warn_gc_dependent(&mut self, span: Span, type_name: &str) {
+        if !self.no_gc {
+            return;
+        }
+        self.diagnostics.push(
+            Diagnostic::warning(format!("`#无垃圾回收` 模式下类型「{type_name}」依赖堆分配"))
+                .with_span(span)
+                .with_note("no_std 目标建议改用 `原生指针` 与 `不安全` 块手动管理内存"),
+        );
+    }
+
     fn resolve_type(&mut self, ty: &Type) -> Ty {
         match &ty.kind {
             TypeKind::Integer => Ty::Integer,
             TypeKind::Float => Ty::Float,
             TypeKind::Bool => Ty::Bool,
-            TypeKind::String => Ty::String,
-            TypeKind::List(element) => Ty::List(Box::new(self.resolve_type(element))),
+            TypeKind::String => {
+                self.warn_gc_dependent(ty.span, "字符串");
+                Ty::String
+            }
+            TypeKind::List(element) => {
+                self.warn_gc_dependent(ty.span, "列表");
+                Ty::List(Box::new(self.resolve_type(element)))
+            }
             TypeKind::Dictionary { key, value } => {
+                self.warn_gc_dependent(ty.span, "字典");
                 let key_ty = self.resolve_type(key);
                 if !key_ty.is_hashable() {
                     self.diagnostics.push(
@@ -188,11 +260,13 @@ impl Analyzer {
             TypeKind::Named(ident) => {
                 if self.structs.contains_key(&ident.name) {
                     Ty::Struct(ident.name.clone())
+                } else if self.enums.contains_key(&ident.name) {
+                    Ty::Enum(ident.name.clone())
                 } else {
                     self.diagnostics.push(
                         Diagnostic::error(format!("未知类型「{}」", ident.name))
                             .with_span(ident.span)
-                            .with_expected("已声明的结构体或基础类型")
+                            .with_expected("已声明的结构体、枚举或基础类型")
                             .with_actual(format!("`{}`", ident.name)),
                     );
                     Ty::Error
@@ -211,7 +285,7 @@ impl Analyzer {
                     self.analyze_items(&module.items);
                     self.symbols.pop_scope();
                 }
-                Item::Import(_) | Item::Type(_) | Item::View(_) => {}
+                Item::Import(_) | Item::Type(_) | Item::View(_) | Item::Enum(_) => {}
             }
         }
     }
@@ -359,14 +433,16 @@ impl Analyzer {
 struct RawDeclarations<'a> {
     functions: Vec<&'a FuncDecl>,
     structs: Vec<&'a TypeDecl>,
+    enums: Vec<&'a EnumDecl>,
 }
 
-/// 递归收集顶层与模块内的函数、结构体声明。
+/// 递归收集顶层与模块内的函数、结构体与枚举声明。
 fn collect_raw_declarations<'a>(items: &'a [Item], raw: &mut RawDeclarations<'a>) {
     for item in items {
         match item {
             Item::Function(function) => raw.functions.push(function),
             Item::Type(declaration) => raw.structs.push(declaration),
+            Item::Enum(declaration) => raw.enums.push(declaration),
             Item::Module(module) => collect_raw_declarations(&module.items, raw),
             Item::Import(_) | Item::View(_) => {}
         }

@@ -758,3 +758,91 @@ fn rejects_raw_pointer_values_outside_unsafe() {
 
     assert_contains(source, &["原生指针「指针」只能在「不安全」块中使用"]);
 }
+
+#[test]
+fn exhaustive_match_on_enum_accepts_all_variants() {
+    let source = "\
+枚举 词法类型 {
+    标识符(字符串),
+    数字(整数),
+    符号,
+}
+
+函数 主() -> 整数 {
+    让 值: 词法类型 = 词法类型::标识符(「abc」);
+    匹配 值 {
+    枚举项 标识符(文本) => { 返回 0; },
+    枚举项 数字(数值) => { 返回 0; },
+    枚举项 符号 => { 返回 0; },
+    }
+    返回 0;
+}";
+
+    assert_ok(source);
+}
+
+#[test]
+fn exhaustive_match_on_enum_rejects_missing_variant() {
+    let source = "\
+枚举 词法类型 {
+    标识符(字符串),
+    数字(整数),
+    符号,
+}
+
+函数 主() -> 整数 {
+    让 值: 词法类型 = 词法类型::标识符(「abc」);
+    匹配 值 {
+    枚举项 标识符(文本) => { 返回 0; },
+    枚举项 数字(数值) => { 返回 0; },
+    }
+    返回 0;
+}";
+
+    assert_contains(source, &["匹配缺少枚举项「符号」分支"]);
+}
+
+#[test]
+fn enum_variant_must_be_used_in_match_of_same_enum() {
+    let source = "\
+枚举 词法类型 {
+    标识符(字符串),
+    数字(整数),
+    符号,
+}
+
+函数 主() -> 整数 {
+    让 值: 词法类型 = 词法类型::标识符(「abc」);
+    匹配 值 {
+        枚举项 标识符(文本) => { 返回 0; },
+    }
+    返回 0;
+}";
+
+    // 未覆盖 数字 / 符号 两个枚举项，必须报穷尽错误。
+    assert_contains(source, &["匹配缺少枚举项「数字」分支"]);
+    assert_contains(source, &["匹配缺少枚举项「符号」分支"]);
+}
+
+#[test]
+fn no_gc_warns_on_heap_types_but_allows_compilation() {
+    let source = "\
+#无垃圾回收
+函数 主() -> 整数 {
+    让 名称: 字符串 = 「底层」;
+    让 数值们: 列表<整数> = [1, 2, 3];
+    打印(名称);
+    打印(数值们[0]);
+    返回 0;
+}";
+
+    let warnings = match run_sema(source) {
+        Ok(warnings) => warnings,
+        Err(errors) => panic!("`#无垃圾回收` 模式不应拦截编译：\n{errors}"),
+    };
+    let message = warnings.to_string();
+
+    assert!(message.contains("字符串"), "诊断：\n{message}");
+    assert!(message.contains("列表"), "诊断：\n{message}");
+    assert!(message.contains("依赖堆分配"), "诊断：\n{message}");
+}

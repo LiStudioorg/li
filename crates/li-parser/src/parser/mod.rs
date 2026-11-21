@@ -5,7 +5,8 @@
 //! 的诊断集合，并在语句层使用恐慌模式恢复到 `;` 或 `}` 后继续解析。
 
 use li_ast::{
-    FieldDef, FuncDecl, Ident, ImportDecl, Item, ModuleDecl, ModulePath, Param, Program, TypeDecl,
+    EnumDecl, EnumVariant, FieldDef, FuncDecl, Ident, ImportDecl, Item, ModuleDecl, ModulePath,
+    Param, Program, TypeDecl,
 };
 use li_errors::{Diagnostic, DiagnosticBag, Position, Span};
 use li_lexer::{Token, TokenKind};
@@ -57,9 +58,37 @@ impl Parser {
     fn parse_program(&mut self) -> Program {
         let start = self.peek().span.start;
         let mut items = Vec::new();
+        let mut no_gc = false;
+
+        // 文件头指令：`#无垃圾回收` 只允许出现在任何程序项之前。
+        // 重复出现或出现在程序项之后都按致命语法错误处理。
+        while self.check(&TokenKind::NoGc) {
+            let token = self.advance();
+            if no_gc {
+                self.diagnostics.push(
+                    Diagnostic::error("重复的 `#无垃圾回收` 指令")
+                        .with_span(token.span)
+                        .with_note("`#无垃圾回收` 每个文件只允许声明一次"),
+                );
+            } else {
+                no_gc = true;
+            }
+            self.skip_semicolons();
+        }
 
         while !self.is_eof() {
             let before = self.current;
+
+            if self.check(&TokenKind::NoGc) {
+                let token = self.advance();
+                self.diagnostics.push(
+                    Diagnostic::error("`#无垃圾回收` 指令必须位于文件开头")
+                        .with_span(token.span)
+                        .with_expected("出现在所有程序项之前")
+                        .with_note("请把该指令移动到文件第一行"),
+                );
+                continue;
+            }
 
             match self.parse_item() {
                 Some(item) => {
@@ -83,8 +112,14 @@ impl Parser {
 
         Program {
             items,
+            no_gc,
             span: Span::new(start, end),
         }
+    }
+
+    /// 跳过连续的分号，用于文件头指令之间多余的 `;`。
+    fn skip_semicolons(&mut self) {
+        while self.eat(&TokenKind::Semicolon) {}
     }
 
     fn parse_item(&mut self) -> Option<Item> {
@@ -94,12 +129,106 @@ impl Parser {
             TokenKind::Async => self.parse_function().map(Item::Function),
             TokenKind::Func => self.parse_function().map(Item::Function),
             TokenKind::Type => self.parse_type_decl().map(Item::Type),
+            TokenKind::EnumType => self.parse_enum_decl().map(Item::Enum),
             TokenKind::View => self.parse_view().map(Item::View),
             _ => {
-                self.error_expected("`模块`、`导入`、`函数`、`异步 函数`、`类型` 或 `视图`");
+                self.error_expected(
+                    "`模块`、`导入`、`函数`、`异步 函数`、`类型`、`枚举` 或 `视图`",
+                );
                 None
             }
         }
+    }
+
+    /// 解析 `枚举 词法类型 { 标识符(字符串), 数字(整数), 符号 }`。
+    fn parse_enum_decl(&mut self) -> Option<EnumDecl> {
+        let enum_token = self.advance();
+        let name = self.parse_identifier("枚举名称")?;
+        self.expect_kind(&TokenKind::LBrace, "`{`")?;
+
+        let mut variants = Vec::new();
+        while !self.check(&TokenKind::RBrace) && !self.is_eof() {
+            if self.eat(&TokenKind::Comma) {
+                continue;
+            }
+
+            let before = self.current;
+            match self.parse_enum_variant() {
+                Some(variant) => {
+                    variants.push(variant);
+                    if self.eat(&TokenKind::Comma) {
+                        continue;
+                    }
+                    if self.check(&TokenKind::RBrace) {
+                        break;
+                    }
+                    self.error_expected("`,` 或 `}`");
+                }
+                None => {
+                    while !self.is_eof()
+                        && !self.check(&TokenKind::Comma)
+                        && !self.check(&TokenKind::RBrace)
+                    {
+                        self.advance();
+                    }
+                    if self.eat(&TokenKind::Comma) {
+                        continue;
+                    }
+                    if self.check(&TokenKind::RBrace) {
+                        break;
+                    }
+                    self.advance();
+                }
+            }
+
+            if self.current == before {
+                self.advance();
+            }
+        }
+
+        let end = self.finish_block();
+        Some(EnumDecl {
+            name,
+            variants,
+            span: Span::new(enum_token.span.start, end),
+        })
+    }
+
+    /// 解析单个枚举项：`标识符(字符串)` 或 `符号`。
+    fn parse_enum_variant(&mut self) -> Option<EnumVariant> {
+        let name = self.parse_identifier("枚举项名称")?;
+        let mut args = Vec::new();
+
+        // 可选的 (类型, 类型, ...) 载荷。
+        if self.check(&TokenKind::LParen) {
+            self.advance();
+            if !self.check(&TokenKind::RParen) {
+                loop {
+                    let ty = self.parse_type()?;
+                    args.push(ty);
+                    if self.eat(&TokenKind::Comma) {
+                        if self.check(&TokenKind::RParen) {
+                            break;
+                        }
+                        continue;
+                    }
+                    break;
+                }
+            }
+            self.expect_kind(&TokenKind::RParen, "`)`")?;
+        }
+
+        let end = if args.is_empty() {
+            name.span.end
+        } else {
+            self.peek().span.start
+        };
+
+        Some(EnumVariant {
+            span: Span::new(name.span.start, end),
+            name,
+            args,
+        })
     }
 
     fn parse_module(&mut self) -> Option<ModuleDecl> {

@@ -121,3 +121,78 @@ fn reports_unsupported_runtime_objects_in_chinese() {
     );
     assert!(message.contains("第 "), "缺少行号定位：\n{message}");
 }
+
+#[test]
+fn lowers_pure_tag_enums_to_integer_discriminants() {
+    let source = "\
+枚举 节点 {
+    数字,
+    加法,
+    无值,
+}
+
+函数 取索引(节点值: 节点) -> 整数 {
+    匹配 节点值 {
+        枚举项 数字 => { 返回 0; },
+        枚举项 加法 => { 返回 1; },
+        枚举项 无值 => { 返回 2; },
+    }
+    返回 0;
+}
+
+函数 主() -> 整数 {
+    让 节点值: 节点 = 节点::加法;
+    返回 取索引(节点值);
+}";
+
+    let llvm = compile(source);
+
+    let comparisons: Vec<&str> = llvm
+        .lines()
+        .filter(|line| line.contains("icmp eq i64"))
+        .collect();
+    assert_eq!(comparisons.len(), 3, "枚举匹配应有三次判别符比较：\n{llvm}");
+    for (line, discriminant) in comparisons.iter().zip(["0", "1", "2"]) {
+        assert!(
+            line.ends_with(&format!(", {discriminant}")),
+            "判别符不是 {discriminant}：{line}\n{llvm}"
+        );
+    }
+    assert!(
+        llvm.contains("store i64 1"),
+        "构造 `节点::加法` 应写入判别符 1：\n{llvm}"
+    );
+}
+
+#[test]
+fn reports_enum_support_warning_without_blocking_generation() {
+    let source = "\
+枚举 形状 {
+    圆(整数),
+    方(整数),
+}
+
+函数 面积(形状值: 形状) -> 整数 {
+    返回 0;
+}
+
+函数 主() -> 整数 {
+    返回 面积(形状::圆(3));
+}";
+
+    let ir = lower_source(source);
+    let (module, diagnostics) = li_codegen_llvm::generate_reporting(&ir, None);
+
+    assert!(module.is_some(), "枚举警告不应阻断 LLVM 生成");
+    let message = diagnostics.to_string();
+    assert!(message.contains("纯标签枚举"), "诊断：\n{message}");
+}
+
+#[test]
+fn generate_reporting_has_no_diagnostics_for_plain_integers() {
+    let ir = lower_source("函数 主() -> 整数 { 返回 0; }");
+    let (module, diagnostics) = li_codegen_llvm::generate_reporting(&ir, None);
+
+    assert!(module.is_some());
+    assert!(diagnostics.is_empty(), "不应产生诊断：\n{diagnostics}");
+}

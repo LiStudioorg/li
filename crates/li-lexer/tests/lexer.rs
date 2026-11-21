@@ -584,3 +584,13 @@ fn reserves_concurrency_keywords() {
     assert_eq!(TokenKind::SharedType.to_string(), "`共享`");
     assert_eq!(TokenKind::BorrowType.to_string(), "`借用`");
 }
+
+#[test]
+fn recognizes_no_gc_directive_but_not_as_comment() {
+    // `#无垃圾回收` 是文件头指令；普通 `#` 行注释仍应被跳过。
+    assert_eq!(
+        kinds("#无垃圾回收\n# 这是注释\n函数 主() -> 整数 { 返回 0; }")[0],
+        TokenKind::NoGc
+    );
+    assert_eq!(TokenKind::NoGc.to_string(), "`#无垃圾回收`");
+}

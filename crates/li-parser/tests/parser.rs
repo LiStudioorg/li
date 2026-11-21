@@ -692,7 +692,7 @@ fn recovers_from_multiple_syntax_errors() {
     assert!(message.contains("实际 `=`"), "诊断：\n{message}");
     assert!(message.contains("期望 表达式"), "诊断：\n{message}");
     assert!(
-        message.contains("期望 `模块`、`导入`、`函数`、`异步 函数`、`类型` 或 `视图`"),
+        message.contains("期望 `模块`、`导入`、`函数`、`异步 函数`、`类型`、`枚举` 或 `视图`"),
         "诊断：\n{message}"
     );
 }
@@ -932,4 +932,32 @@ fn parses_binding_attribute_expression() {
         paragraph.attributes[1].value.kind,
         ViewValueKind::Expression(_)
     ));
+}
+
+#[test]
+fn records_no_gc_directive_at_file_head() {
+    let program = parse_ok("#无垃圾回收\n函数 主() -> 整数 { 返回 0; }");
+    assert!(program.no_gc, "应记录 `#无垃圾回收` 指令");
+}
+
+#[test]
+fn rejects_no_gc_directive_after_items() {
+    let errors = parse_err("函数 主() -> 整数 { 返回 0; }\n#无垃圾回收");
+    let message = errors.to_string();
+
+    assert!(
+        message.contains("`#无垃圾回收` 指令必须位于文件开头"),
+        "诊断：\n{message}"
+    );
+}
+
+#[test]
+fn rejects_duplicate_no_gc_directive() {
+    let errors = parse_err("#无垃圾回收\n#无垃圾回收\n函数 主() -> 整数 { 返回 0; }");
+    let message = errors.to_string();
+
+    assert!(
+        message.contains("重复的 `#无垃圾回收` 指令"),
+        "诊断：\n{message}"
+    );
 }

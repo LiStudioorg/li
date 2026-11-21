@@ -46,6 +46,8 @@ pub enum IrType {
     },
     /// 程序内声明的结构体类型。
     Struct(String),
+    /// 枚举类型。
+    Enum(String),
     /// 无法确定或不受支持的类型。
     Unknown,
 }
@@ -115,6 +117,7 @@ impl fmt::Display for IrType {
             Self::Optional(inner) => write!(f, "可选<{inner}>"),
             Self::Result { ok, error } => write!(f, "结果<{ok}, {error}>"),
             Self::Struct(name) => f.write_str(name),
+            Self::Enum(name) => f.write_str(name),
             Self::Unknown => f.write_str("未知类型"),
         }
     }
@@ -978,6 +981,11 @@ pub struct Program {
     ///
     /// 该标记让不支持底层内存操作的后端在代码生成前直接拒绝程序。
     pub uses_unsafe: bool,
+    /// 是否启用了 `#无垃圾回收`（no_std）模式。
+    ///
+    /// 该模式下程序不得依赖 GC 管理的堆分配类型；前端已用黄色警告
+    /// 标记相关用法，后端可据此选择不引入 GC 运行时。
+    pub no_gc: bool,
 }
 
 impl Program {

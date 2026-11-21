@@ -263,6 +263,8 @@ impl Analyzer {
         let mut has_success = false;
         let mut has_failure = false;
         let mut catch_all = false;
+        let mut matched_enum_variants: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
 
         for arm in &stmt.arms {
             self.symbols.push_scope();
@@ -272,6 +274,7 @@ impl Analyzer {
                 &mut has_success,
                 &mut has_failure,
                 &mut catch_all,
+                &mut matched_enum_variants,
             );
             self.analyze_block(&arm.body);
             self.symbols.pop_scope();
@@ -296,6 +299,35 @@ impl Analyzer {
                 self.report_missing_match_arm(stmt, "失败");
             }
         }
+
+        // 枚举类型必须穷尽所有枚举项；未覆盖的项产生红色 Error 诊断。
+        if let Ty::Enum(name) = &scrutinee_ty {
+            if !catch_all && !scrutinee_ty.is_error() {
+                let missing: Vec<String> = self
+                    .enums
+                    .get(name)
+                    .map(|info| {
+                        info.variants
+                            .iter()
+                            .map(|(v, _)| v.clone())
+                            .filter(|v| !matched_enum_variants.contains(v))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                for variant_name in missing {
+                    self.report_missing_enum_arm(stmt, &variant_name);
+                }
+            }
+        }
+    }
+
+    fn report_missing_enum_arm(&mut self, stmt: &MatchStmt, variant: &str) {
+        self.diagnostics.push(
+            Diagnostic::error(format!("匹配缺少枚举项「{variant}」分支"))
+                .with_span(stmt.span)
+                .with_expected(format!("覆盖枚举项「{variant}」的匹配分支"))
+                .with_actual("枚举匹配未穷尽"),
+        );
     }
 
     fn report_missing_match_arm(&mut self, stmt: &MatchStmt, pattern: &str) {
@@ -315,6 +347,7 @@ impl Analyzer {
         has_success: &mut bool,
         has_failure: &mut bool,
         catch_all: &mut bool,
+        matched_enum_variants: &mut std::collections::HashSet<String>,
     ) {
         match &pattern.kind {
             PatternKind::Wildcard => {
@@ -385,6 +418,71 @@ impl Analyzer {
                             self.declare_pattern_binding(ident, Ty::Error);
                         }
                     }
+                }
+            }
+            PatternKind::Enum { variant, bindings } => {
+                // 记录该枚举项已被覆盖；用于穷尽性检查。
+                matched_enum_variants.insert(variant.name.clone());
+
+                if let Ty::Enum(name) = scrutinee {
+                    let enum_info = self.enums.get(name).cloned();
+                    if let Some(info) = enum_info {
+                        let payload = info
+                            .variants
+                            .iter()
+                            .find(|(v, _)| v == &variant.name)
+                            .map(|(_, p)| p.clone());
+
+                        let Some(payload) = payload else {
+                            self.report(
+                                variant.span,
+                                format!("枚举「{name}」没有枚举项「{}」", variant.name),
+                            );
+                            return;
+                        };
+
+                        if bindings.len() != payload.len() {
+                            self.diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "枚举项「{}」的载荷数量不匹配",
+                                    variant.name
+                                ))
+                                .with_span(pattern.span)
+                                .with_expected(format!("{} 个参数", payload.len()))
+                                .with_actual(format!("{} 个参数", bindings.len())),
+                            );
+                        } else {
+                            for (binding, payload_ty) in bindings.iter().zip(&payload) {
+                                if let Some(ident) = binding {
+                                    // 载荷解构依赖 M11 运行时对象；当前骨架只
+                                    // 传递判别符，绑定的载荷值尚不可用。按强制
+                                    // 警告机制报黄色警告但不阻断编译。
+                                    if !payload.is_empty() {
+                                        self.diagnostics.push(
+                                            Diagnostic::warning(format!(
+                                                "枚举项「{}」的载荷解构尚未实现：绑定「{}」当前不可用，\
+                                                 请改用无载荷枚举或等待 M11 运行时",
+                                                variant.name, ident.name
+                                            ))
+                                            .with_span(ident.span)
+                                            .with_note("编译继续，但该绑定值不应被依赖"),
+                                        );
+                                    }
+                                    self.declare_pattern_binding(ident, payload_ty.clone());
+                                }
+                            }
+                        }
+                    }
+                } else if !scrutinee.is_error() {
+                    self.diagnostics.push(
+                        Diagnostic::error(format!(
+                            "枚举项「{}」只能匹配枚举类型，实际为「{scrutinee}」",
+                            variant.name
+                        ))
+                        .with_span(pattern.span)
+                        .with_expected("枚举类型")
+                        .with_actual(scrutinee.to_string()),
+                    );
                 }
             }
         }

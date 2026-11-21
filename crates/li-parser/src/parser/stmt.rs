@@ -299,12 +299,44 @@ impl Parser {
             }
             TokenKind::Identifier(name) => {
                 self.advance();
-                let kind = if name == "_" {
-                    PatternKind::Wildcard
-                } else {
-                    PatternKind::Binding(Ident::new(name, span))
-                };
-                Some(Pattern { kind, span })
+                if name == "_" {
+                    return Some(Pattern {
+                        kind: PatternKind::Wildcard,
+                        span,
+                    });
+                }
+                Some(Pattern {
+                    kind: PatternKind::Binding(Ident::new(name, span)),
+                    span,
+                })
+            }
+            TokenKind::Variant => {
+                // 枚举项模式：`枚举项 标识符(文本)` 或 `枚举项 符号`。
+                // `枚举项` 是显式关键字，与名称绑定（裸标识符）互斥。
+                let _ = self.advance();
+                let variant = self.parse_identifier("枚举项名称")?;
+                let mut bindings = Vec::new();
+                if self.check(&TokenKind::LParen) {
+                    self.advance();
+                    if !self.check(&TokenKind::RParen) {
+                        loop {
+                            let binding = self.parse_identifier("绑定名称");
+                            bindings.push(binding);
+                            if self.eat(&TokenKind::Comma) {
+                                if self.check(&TokenKind::RParen) {
+                                    break;
+                                }
+                                continue;
+                            }
+                            break;
+                        }
+                    }
+                    self.expect_kind(&TokenKind::RParen, "`)`")?;
+                }
+                Some(Pattern {
+                    kind: PatternKind::Enum { variant, bindings },
+                    span,
+                })
             }
             TokenKind::Integer(value) => {
                 self.advance();

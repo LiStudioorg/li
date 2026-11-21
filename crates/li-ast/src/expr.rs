@@ -72,6 +72,21 @@ pub enum ExprKind {
     ListLiteral(Vec<Expr>),
     /// 括号表达式，保留括号以便后续工具还原源码结构。
     Parenthesized(Box<Expr>),
+    /// 枚举项构造器，例如 `节点::数字(5)`、`节点::无值`。
+    ///
+    /// 用 `Box` 包裹，避免单个变体撑大整个 [`ExprKind`]。
+    EnumVariant(Box<EnumVariantExpr>),
+}
+
+/// 枚举项构造器的细节。
+#[derive(Clone, Debug, PartialEq)]
+pub struct EnumVariantExpr {
+    /// 枚举类型名称，例如 `节点`；可缺省，缺省时由上下文推断。
+    pub enum_name: Option<Ident>,
+    /// 枚举项名称。
+    pub name: Ident,
+    /// 载荷实参列表。
+    pub args: Vec<Expr>,
 }
 
 /// 一元运算符。

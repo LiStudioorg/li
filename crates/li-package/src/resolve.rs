@@ -70,7 +70,7 @@ pub fn has_imports(items: &[Item]) -> bool {
     items.iter().any(|item| match item {
         Item::Import(_) => true,
         Item::Module(module) => has_imports(&module.items),
-        Item::Function(_) | Item::Type(_) | Item::View(_) => false,
+        Item::Function(_) | Item::Type(_) | Item::View(_) | Item::Enum(_) => false,
     })
 }
 
@@ -156,6 +156,7 @@ impl Resolver {
 
         Program {
             items,
+            no_gc: program.no_gc,
             span: program.span,
         }
     }
@@ -623,6 +624,8 @@ fn flatten_into(
         match item {
             Item::Function(function) => functions.push((prefix.clone(), function.clone())),
             Item::Type(declaration) => types.push((prefix.clone(), declaration.clone())),
+            // 枚举声明不参与跨包改写；保持原样即可。
+            Item::Enum(_) => {}
             Item::Module(module) => {
                 prefix.push(module.name.name.clone());
                 flatten_into(&module.items, prefix, functions, types);
@@ -789,6 +792,11 @@ fn rewrite_expr(expr: &mut Expr, scope: &Scope, diagnostics: &mut DiagnosticBag)
         }
         ExprKind::Parenthesized(inner) => rewrite_expr(inner, scope, diagnostics),
         ExprKind::Await(inner) => rewrite_expr(inner, scope, diagnostics),
+        ExprKind::EnumVariant(variant) => {
+            for arg in &mut variant.args {
+                rewrite_expr(arg, scope, diagnostics);
+            }
+        }
         ExprKind::Literal(_) | ExprKind::Identifier(_) | ExprKind::Input => {}
     }
 }
@@ -818,7 +826,7 @@ fn collect_imports_into(items: &[Item], imports: &mut Vec<ImportDecl>) {
         match item {
             Item::Import(import) => imports.push(import.clone()),
             Item::Module(module) => collect_imports_into(&module.items, imports),
-            Item::Function(_) | Item::Type(_) | Item::View(_) => {}
+            Item::Function(_) | Item::Type(_) | Item::View(_) | Item::Enum(_) => {}
         }
     }
 }
@@ -849,7 +857,7 @@ fn find_view(items: &[Item]) -> Option<&ViewDecl> {
                     return Some(view);
                 }
             }
-            Item::Import(_) | Item::Function(_) | Item::Type(_) => {}
+            Item::Import(_) | Item::Function(_) | Item::Type(_) | Item::Enum(_) => {}
         }
     }
     None

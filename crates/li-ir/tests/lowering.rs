@@ -241,3 +241,9 @@ fn marks_programs_with_unsafe_blocks_and_raw_pointer_types() {
         .iter()
         .any(|local| matches!(local.ty, IrType::RawPointer(_))));
 }
+
+#[test]
+fn propagates_no_gc_directive_to_ir() {
+    let program = lower_source("#无垃圾回收\n函数 主() -> 整数 { 返回 0; }");
+    assert!(program.no_gc, "IR 必须保留 `#无垃圾回收` 标记");
+}

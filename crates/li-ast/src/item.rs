@@ -12,6 +12,12 @@ use crate::view::ViewDecl;
 pub struct Program {
     /// 顶层程序项，按源码顺序保存。
     pub items: Vec<Item>,
+    /// 是否声明了 `#无垃圾回收` 文件头指令。
+    ///
+    /// 该标记表示程序面向 no_std 目标：不依赖垃圾回收，堆分配类型
+    /// （字符串、列表、字典）会产生黄色警告，底层内存操作仍须放在
+    /// `不安全` 块中。
+    pub no_gc: bool,
     /// 整个源文件在源码中的区间。
     pub span: Span,
 }
@@ -27,6 +33,8 @@ pub enum Item {
     Function(FuncDecl),
     /// 类型声明，对应结构体定义。
     Type(TypeDecl),
+    /// 枚举声明，例如 `枚举 词法类型 { 标识符(字符串), 数字(整数), 符号 }`。
+    Enum(EnumDecl),
     /// `.lui` 视图声明。
     View(ViewDecl),
 }
@@ -39,6 +47,7 @@ impl Item {
             Self::Import(item) => item.span,
             Self::Function(item) => item.span,
             Self::Type(item) => item.span,
+            Self::Enum(item) => item.span,
             Self::View(item) => item.span,
         }
     }
@@ -122,5 +131,31 @@ pub struct FieldDef {
     /// 字段类型。
     pub ty: Type,
     /// 整个字段定义在源码中的区间。
+    pub span: Span,
+}
+
+/// 枚举声明，对应 `枚举 词法类型 { 标识符(字符串), 数字(整数), 符号 }`。
+///
+/// 每个枚举项（variant）可以携带 0 到 N 个参数，用于表达
+/// 「标识符(字符串)、数字(整数)、符号」这类带载荷的枚举；
+/// 匹配时必须穷尽所有枚举项，未覆盖的项由 Sema 报红色错误。
+#[derive(Clone, Debug, PartialEq)]
+pub struct EnumDecl {
+    /// 枚举名称。
+    pub name: Ident,
+    /// 枚举项列表，按源码顺序保存。
+    pub variants: Vec<EnumVariant>,
+    /// 整个枚举声明在源码中的区间。
+    pub span: Span,
+}
+
+/// 一个枚举项，例如 `标识符(字符串)` 或 `符号`。
+#[derive(Clone, Debug, PartialEq)]
+pub struct EnumVariant {
+    /// 枚举项名称。
+    pub name: Ident,
+    /// 枚举项的参数列表；没有参数表示「裸」枚举项。
+    pub args: Vec<Type>,
+    /// 整个枚举项在源码中的区间。
     pub span: Span,
 }

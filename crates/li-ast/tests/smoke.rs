@@ -35,6 +35,7 @@ fn builds_a_minimal_program() {
     };
     let program = Program {
         items: vec![Item::Function(function)],
+        no_gc: false,
         span,
     };
 

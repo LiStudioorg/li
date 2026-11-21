@@ -29,14 +29,33 @@ pub fn generate_for_target(program: &Program, target: &str) -> Result<String, Di
 }
 
 fn generate_with_target(program: &Program, target: Option<&str>) -> Result<String, DiagnosticBag> {
+    let (module, diagnostics) = generate_reporting(program, target);
+
+    match module {
+        Some(module) if !diagnostics.has_errors() => Ok(module),
+        _ => Err(diagnostics),
+    }
+}
+
+/// 生成 LLVM IR，同时把黄色警告（例如"暂只支持纯标签枚举"）交给调用方。
+///
+/// 返回值第一项为 `None` 表示存在致命错误、未生成模块；否则为文本 LLVM IR。
+/// 第二项是完整的诊断集合，调用方应把其中的警告打印到 stderr，
+/// 但不要因为警告而中断编译。
+pub fn generate_reporting(
+    program: &Program,
+    target: Option<&str>,
+) -> (Option<String>, DiagnosticBag) {
     let mut generator = Generator::new();
     let module = generator.generate(program, target);
 
-    if generator.diagnostics.has_errors() {
-        Err(generator.diagnostics)
+    let module = if generator.diagnostics.has_errors() {
+        None
     } else {
-        Ok(module)
-    }
+        Some(module)
+    };
+
+    (module, generator.diagnostics)
 }
 
 struct Generator {
@@ -55,6 +74,10 @@ impl Generator {
     }
 
     fn generate(&mut self, program: &Program, target: Option<&str>) -> String {
+        // 枚举预检：LLVM 骨架目前只支持"纯标签枚举"（所有枚举项都没有载荷）；
+        // 带载荷的枚举需要 GC 运行时对象，报黄字警告拦截。
+        self.warn_enum_support(program);
+
         let mut functions = String::new();
 
         for function in &program.functions {
@@ -512,6 +535,44 @@ impl Generator {
         output.push_str("}\n");
     }
 
+    /// 枚举预检：LLVM 骨架目前只支持"纯标签枚举"（所有枚举项都没有载荷）；
+    /// 带载荷的枚举需要 GC 运行时对象，报黄字警告拦截。
+    ///
+    /// 当前 IR 层不区分"纯标签"与"带载荷"，统一用 `IrType::Enum(name)` 表示；
+    /// 因此只要发现 `IrType::Enum`，就保守地报黄字警告。
+    fn warn_enum_support(&mut self, program: &Program) {
+        for function in &program.functions {
+            let mut has_enum = false;
+
+            if matches!(function.return_type, IrType::Enum(_)) {
+                has_enum = true;
+            }
+            for param in &function.params {
+                if matches!(param.ty, IrType::Enum(_)) {
+                    has_enum = true;
+                }
+            }
+            for local in &function.locals {
+                if matches!(local.ty, IrType::Enum(_)) {
+                    has_enum = true;
+                }
+            }
+
+            if has_enum {
+                let span = first_span(function);
+                self.diagnostics.push(
+                    Diagnostic::warning(format!(
+                        "LLVM 后端暂只支持纯标签枚举；函数「{}」使用了枚举类型，\
+                         若该枚举携带堆数据（带载荷），运行期行为未定义；\
+                         建议改用 VM 或 JS 后端编译",
+                        function.name
+                    ))
+                    .with_span(span),
+                );
+            }
+        }
+    }
+
     fn report(&mut self, span: Span, message: impl Into<String>) {
         self.diagnostics
             .push(Diagnostic::error(message).with_span(span));
@@ -534,6 +595,13 @@ fn llvm_type(ty: &IrType) -> Result<&'static str, String> {
         IrType::String => "ptr",
         IrType::RawPointer(_) => "ptr",
         IrType::Null => "ptr",
+        // 枚举类型：LLVM 骨架目前只支持"纯标签枚举"（所有枚举项都没有
+        // 载荷）；带载荷的枚举需要 GC 运行时对象，由调用方在降级阶段
+        // 报黄色警告拦截，不进入代码生成。
+        IrType::Enum(_) => "i64",
+        // 未知类型：用 ptr 占位，避免整个编译失败；实际值由上层语义
+        // 检查（Sema）保证不会真正参与运算。
+        IrType::Unknown => "ptr",
         other => {
             return Err(format!(
                 "类型「{other}」需要 GC 运行时对象，当前 LLVM 骨架尚未实现"
@@ -565,6 +633,10 @@ fn constant_value(
         | (Constant::Null, IrType::RawPointer(_))
         | (Constant::Null, IrType::Null) => Ok(value),
         (Constant::Null, IrType::String) => Ok("null".to_owned()),
+        // 枚举项构造器：字符串判别符 + 未知/枚举类型。
+        (Constant::String(_), IrType::Unknown | IrType::Enum(_)) => Ok(value),
+        // 枚举判别符：整数索引 + 枚举类型（纯标签枚举降级为 i64）。
+        (Constant::Integer(_), IrType::Enum(_)) => Ok(value),
         _ => Err(format!("常量 {constant:?} 与类型「{ty}」不匹配")),
     }
 }
@@ -640,6 +712,8 @@ fn binary_expression(
             IrType::Integer | IrType::Bool => "icmp eq",
             IrType::RawPointer(_) => "icmp eq",
             IrType::Float => "fcmp oeq",
+            // 枚举类型：用指针比较（字符串判别符）。
+            IrType::Enum(_) => "icmp eq",
             other => {
                 return Err(format!("LLVM 后端暂不支持类型「{other}」的相等比较"));
             }

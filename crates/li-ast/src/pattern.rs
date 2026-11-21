@@ -26,4 +26,13 @@ pub enum PatternKind {
     Success(Option<Ident>),
     /// 结果失败模式，例如 `失败` 或 `失败(错误)`。
     Failure(Option<Ident>),
+    /// 枚举项模式，例如 `标识符(文本)` 或 `符号`。
+    ///
+    /// 携带 0 到 N 个绑定名称；匹配时要求枚举项的载荷类型与绑定类型一致。
+    Enum {
+        /// 枚举项名称。
+        variant: Ident,
+        /// 枚举项的载荷绑定，按声明顺序对应。
+        bindings: Vec<Option<Ident>>,
+    },
 }
