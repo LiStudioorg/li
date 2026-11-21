@@ -752,3 +752,67 @@ fn copy_fixture_to(directory: &std::path::Path, name: &str) -> std::path::PathBu
     });
     target
 }
+
+#[test]
+fn cleans_global_cache_and_reports_freed_space() {
+    let cache = temp_directory("li-cli-缓存");
+    let native = cache.join("native");
+    fs::create_dir_all(&native).expect("无法创建缓存子目录");
+    fs::write(native.join("示例.ll"), b"declare i64 @putchar(i64)\n").expect("无法写入缓存文件");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_li"))
+        .arg("清理")
+        .env("LI_CACHE_DIR", &cache)
+        .output()
+        .expect("无法启动 li 编译器");
+
+    assert!(
+        output.status.success(),
+        "清理失败：\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("已清理全局编译缓存"),
+        "缺少清理提示：{stdout}"
+    );
+    assert!(stdout.contains("1 个文件"), "缺少文件计数：{stdout}");
+    assert!(!cache.exists(), "清理后缓存目录应被删除");
+
+    let _ = fs::remove_dir_all(&cache);
+}
+
+#[test]
+fn native_build_keeps_intermediate_ir_out_of_source_directory() {
+    if Command::new("clang").arg("--version").output().is_err() {
+        return;
+    }
+
+    let directory = temp_directory("li-cli-中间产物");
+    let cache = temp_directory("li-cli-缓存目录");
+    let input = directory.join("示例.li");
+    fs::write(&input, "函数 主() -> 整数 {\n    返回 0;\n}\n").expect("无法写入 li 源文件");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_li"))
+        .arg("编译-原生")
+        .arg(&input)
+        .env("LI_CACHE_DIR", &cache)
+        .output()
+        .expect("无法启动 li 编译器");
+
+    assert!(
+        output.status.success(),
+        "原生编译失败：\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert!(
+        !directory.join("示例.ll").exists(),
+        "中间 .ll 不应污染源码目录"
+    );
+    assert!(cache.join("native").exists(), "中间 .ll 应写入全局缓存目录");
+
+    let _ = fs::remove_dir_all(&directory);
+    let _ = fs::remove_dir_all(&cache);
+}

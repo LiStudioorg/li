@@ -13,10 +13,12 @@
 //! - `li 编译-html <文件.lui>`：把视图文件编译为同名单体 HTML 文件；
 //! - `li 服务 <文件.lui> [端口]`：编译视图并在内存中直接提供 HTTP 服务；
 //! - `li 桌面 <文件.lui>`：M15 跨平台桌面 GUI，把 `.lui` 加载到原生窗口。
+//! - `li 清理`：清空全局编译缓存并报告释放空间。
 //!
 //! 前端流程完全复用：语法分析 → 依赖链接 → 语义检查 → 中立 IR 降级 →
 //! 后端代码生成；HTML 后端直接消费视图 AST，不经过 IR。
 
+mod cache;
 mod desktop;
 
 use std::env;
@@ -167,6 +169,13 @@ fn main() -> ExitCode {
             }
             run_desktop(Path::new(&args[1]))
         }
+        "清理" => {
+            if args.len() != 1 {
+                eprintln!("错误：命令「清理」不接受参数");
+                return ExitCode::FAILURE;
+            }
+            clean_cache()
+        }
         "版本" | "--version" | "-V" => {
             println!("li 编译器 v{}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
@@ -196,6 +205,7 @@ fn print_usage() {
     println!("  li 编译-html <文件.lui> 将 .lui 视图文件编译为同名 .html 文件");
     println!("  li 服务 <文件.lui> [端口] 编译单体视图并启动 HTTP 服务（默认 8080）");
     println!("  li 桌面 <文件.lui>    M15 跨平台桌面 GUI：加载 .lui 到原生窗口");
+    println!("  li 清理                清空全局编译缓存并报告释放空间");
     println!("  li 版本                显示版本信息");
     println!("  li 帮助                显示帮助信息");
 }
@@ -536,14 +546,17 @@ fn compile_to_native(input: &Path, target: Option<&str>, release: bool) -> ExitC
         None => return ExitCode::FAILURE,
     };
 
-    let llvm_path = input.with_extension("ll");
-    if let Err(error) = fs::write(&llvm_path, llvm_ir) {
-        eprintln!(
-            "错误：无法写入文件「{}」：{}",
-            llvm_path.display(),
-            io_error_text(&error)
-        );
-        return ExitCode::FAILURE;
+    let llvm_path = native_intermediate_path(&llvm_ir, target, release);
+    // 缓存键由 IR 内容决定：命中时无需重写中间文件。
+    if !llvm_path.exists() {
+        if let Err(error) = fs::write(&llvm_path, llvm_ir) {
+            eprintln!(
+                "错误：无法写入中间文件「{}」：{}",
+                llvm_path.display(),
+                io_error_text(&error)
+            );
+            return ExitCode::FAILURE;
+        }
     }
 
     let executable = if target.is_some() {
@@ -606,6 +619,56 @@ fn compile_to_native(input: &Path, target: Option<&str>, release: bool) -> ExitC
         .unwrap_or_default();
     println!("已生成原生二进制：{}{suffix}", executable.display());
     ExitCode::SUCCESS
+}
+
+/// 清空全局编译缓存，并报告释放的文件数与空间。
+fn clean_cache() -> ExitCode {
+    let root = match cache::cache_root() {
+        Some(root) => root,
+        None => {
+            eprintln!("错误：无法确定全局缓存目录，请设置 LI_CACHE_DIR 或 HOME");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    match cache::clean() {
+        Ok((files, bytes)) => {
+            if files == 0 {
+                println!("全局编译缓存已为空：{}", root.display());
+            } else {
+                println!(
+                    "已清理全局编译缓存：{} 个文件，释放 {}（{}）",
+                    files,
+                    cache::format_size(bytes),
+                    root.display()
+                );
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!(
+                "错误：无法清理全局编译缓存「{}」：{}",
+                root.display(),
+                io_error_text(&error)
+            );
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// 计算原生编译中间文件（`.ll`）的缓存路径。///
+/// 中间产物统一写入全局缓存目录，避免污染源码目录；缓存目录不可用时
+/// 退回系统临时目录。键由 LLVM IR 内容、目标三元组与优化模式共同决定，
+/// 因此相同输入会稳定复用同一份中间文件。
+fn native_intermediate_path(llvm_ir: &str, target: Option<&str>, release: bool) -> PathBuf {
+    let key = cache::cache_key(&[
+        llvm_ir,
+        target.unwrap_or(""),
+        if release { "release" } else { "debug" },
+    ]);
+
+    let directory = cache::native_cache_dir().unwrap_or_else(env::temp_dir);
+    directory.join(format!("{key}.ll"))
 }
 
 /// 为交叉编译目标挑选 sysroot（`-B` 指向的目录）；没有匹配目录时返回 None。
